@@ -25,6 +25,7 @@ type HostAgent struct {
 	reconnectTimer *time.Timer
 	ctx            context.Context
 	cancel         context.CancelFunc
+	audioBuffer    []byte
 }
 
 type DirectorMessage struct {
@@ -133,11 +134,15 @@ func (h *HostAgent) connectToLiveKit() error {
 
 func (h *HostAgent) connectToOpenAI() error {
 	apiKey := getEnv("OPENAI_API_KEY", "")
+	log.Printf("OpenAI API key: %s", apiKey[:10]+"...") // 最初の10文字だけ表示
+
 	if apiKey == "" || apiKey == "your-openai-api-key" || apiKey == "test-mode" {
 		log.Println("OpenAI API key not set, using test mode")
 		h.openaiConn = nil // テストモード
 		return nil
 	}
+
+	log.Println("Attempting to connect to OpenAI Realtime API...")
 
 	// OpenAI Realtime WebSocket接続
 	url := "wss://api.openai.com/v1/realtime?model=gpt-realtime"
@@ -145,6 +150,7 @@ func (h *HostAgent) connectToOpenAI() error {
 		"Authorization": {fmt.Sprintf("Bearer %s", apiKey)},
 	}
 
+	log.Printf("Connecting to: %s", url)
 	conn, _, err := websocket.DefaultDialer.Dial(url, headers)
 	if err != nil {
 		log.Printf("Failed to connect to OpenAI: %v, using test mode", err)
@@ -158,15 +164,18 @@ func (h *HostAgent) connectToOpenAI() error {
 	sessionUpdate := map[string]interface{}{
 		"type": "session.update",
 		"session": map[string]interface{}{
-			"type":         "realtime",
-			"instructions": "あなたは24時間AIラジオのDJ。無音禁止、短文でテンポよく。Q&Aでは回答→10文字要約→次へ。",
-			"voice":        "marin",
+			"type":              "realtime",
+			"instructions":      "あなたは24時間AIラジオのDJ。無音禁止、短文でテンポよく。Q&Aでは回答→10文字要約→次へ。",
+			"output_modalities": []string{"audio"},
 			"audio": map[string]interface{}{
 				"input": map[string]interface{}{
 					"turn_detection": map[string]interface{}{
 						"type":            "server_vad",
 						"idle_timeout_ms": 6000,
 					},
+				},
+				"output": map[string]interface{}{
+					"voice": "marin",
 				},
 			},
 		},
@@ -213,6 +222,7 @@ func (h *HostAgent) handleOpenAIMessages() {
 		return
 	}
 
+	log.Println("Starting OpenAI message handling loop...")
 	for {
 		select {
 		case <-h.ctx.Done():
@@ -225,15 +235,26 @@ func (h *HostAgent) handleOpenAIMessages() {
 				return
 			}
 
+			log.Printf("Received OpenAI message: %+v", msg)
+
 			// 音声出力をLiveKitにPublish
 			if msgType, ok := msg["type"].(string); ok {
 				switch msgType {
-				case "response.audio.delta":
+				case "response.output_audio.delta":
 					if audioData, ok := msg["delta"].(string); ok {
+						log.Printf("Received audio delta, length: %d", len(audioData))
 						h.publishAudioToLiveKit(audioData)
 					}
 				case "response.done":
 					log.Println("OpenAI response completed")
+				case "session.created":
+					log.Println("OpenAI session created")
+				case "session.updated":
+					log.Println("OpenAI session updated")
+				case "conversation.item.added", "conversation.item.done", "response.output_audio.done", "response.output_audio_transcript.done", "response.content_part.done", "response.output_item.done", "rate_limits.updated":
+					// これらのメッセージは無視
+				default:
+					log.Printf("Unhandled message type: %s", msgType)
 				}
 			}
 		}
@@ -246,19 +267,40 @@ func (h *HostAgent) sendMessage(content string) {
 		return
 	}
 
+	log.Printf("Sending message to OpenAI: %s", content)
+
 	message := map[string]interface{}{
 		"type": "conversation.item.create",
 		"item": map[string]interface{}{
-			"type":    "message",
-			"role":    "user",
-			"content": content,
-			"name":    "system",
+			"type": "message",
+			"role": "user",
+			"content": []map[string]interface{}{
+				{
+					"type": "input_text",
+					"text": content,
+				},
+			},
 		},
 	}
 
 	if err := h.openaiConn.WriteJSON(message); err != nil {
 		log.Printf("Failed to send message: %v", err)
+		return
 	}
+
+	log.Printf("Message sent successfully: %s", content)
+
+	// 音声応答を強制的に生成
+	responseCreate := map[string]interface{}{
+		"type": "response.create",
+	}
+
+	if err := h.openaiConn.WriteJSON(responseCreate); err != nil {
+		log.Printf("Failed to create response: %v", err)
+		return
+	}
+
+	log.Printf("Response creation requested")
 }
 
 func (h *HostAgent) publishAudioToLiveKit(audioData string) {
@@ -290,17 +332,28 @@ func (h *HostAgent) publishAudioToLiveKit(audioData string) {
 		return
 	}
 
-	// オーディオトラックに送信（PCM16をOpusとして扱う）
-	sample := media.Sample{
-		Data:     audioBytes,
-		Duration: 20 * time.Millisecond, // 20msのサンプル
-	}
-	if err := h.audioTrack.WriteSample(sample, nil); err != nil {
-		log.Printf("Failed to write audio sample: %v", err)
-		return
+	// 音声データをバッファに追加
+	h.audioBuffer = append(h.audioBuffer, audioBytes...)
+
+	// PCM16音声データを適切に処理（24kHz, 16bit = 2 bytes/sample）
+	// 20msのチャンクに分割（24kHz * 20ms * 2 bytes = 960 bytes）
+	chunkSize := 960 // 20ms分のデータ
+	for len(h.audioBuffer) >= chunkSize {
+		chunk := h.audioBuffer[:chunkSize]
+		h.audioBuffer = h.audioBuffer[chunkSize:]
+
+		// オーディオトラックに送信
+		sample := media.Sample{
+			Data:     chunk,
+			Duration: 20 * time.Millisecond, // 20ms固定
+		}
+		if err := h.audioTrack.WriteSample(sample, nil); err != nil {
+			log.Printf("Failed to write audio sample: %v", err)
+			return
+		}
 	}
 
-	log.Printf("Audio data published: %d bytes", len(audioBytes))
+	log.Printf("Audio data published: %d bytes in chunks", len(audioBytes))
 }
 
 func (h *HostAgent) reconnectLiveKit() {
