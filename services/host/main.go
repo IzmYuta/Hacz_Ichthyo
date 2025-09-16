@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -9,10 +10,16 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
+	"github.com/livekit/protocol/auth"
+	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v3/pkg/media"
 )
 
 type HostAgent struct {
 	openaiConn     *websocket.Conn
+	livekitConn    *websocket.Conn
+	peerConnection *webrtc.PeerConnection
+	audioTrack     *webrtc.TrackLocalStaticSample
 	reconnectTimer *time.Timer
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -48,10 +55,14 @@ func main() {
 		cancel: cancel,
 	}
 
-	// LiveKit Room接続（一時的に無効化）
-	// if err := agent.connectToLiveKit(); err != nil {
-	//	log.Fatal("Failed to connect to LiveKit:", err)
-	// }
+	// LiveKit Room接続
+	log.Println("Attempting to connect to LiveKit...")
+	if err := agent.connectToLiveKit(); err != nil {
+		log.Printf("Failed to connect to LiveKit: %v", err)
+		// LiveKit接続に失敗しても続行
+	} else {
+		log.Println("Successfully connected to LiveKit")
+	}
 
 	// OpenAI Realtime接続
 	if err := agent.connectToOpenAI(); err != nil {
@@ -62,39 +73,85 @@ func main() {
 	agent.run()
 }
 
-// func (h *HostAgent) connectToLiveKit() error {
-//	apiKey := getEnv("LIVEKIT_API_KEY", "devkey")
-//	apiSecret := getEnv("LIVEKIT_API_SECRET", "secret")
-//	wsURL := getEnv("LIVEKIT_WS_URL", "ws://localhost:7880")
-//
-//	// Host用のトークン生成
-//	at := auth.NewAccessToken(apiKey, apiSecret)
-//	grant := &auth.VideoGrant{
-//		RoomJoin:     true,
-//		Room:         "radio-24",
-//		CanPublish:   true,
-//		CanSubscribe: true,
-//	}
-//	at.AddGrant(grant).
-//		SetIdentity("host-agent").
-//		SetValidFor(time.Hour * 24)
-//
-//	token, err := at.ToJWT()
-//	if err != nil {
-//		return fmt.Errorf("failed to generate token: %w", err)
-//	}
-//
-//	// Room接続
-//	h.room, err = room.Connect(wsURL, token, &room.ConnectOptions{
-//		AutoSubscribe: true,
-//	})
-//	if err != nil {
-//		return fmt.Errorf("failed to connect to room: %w", err)
-//	}
-//
-//	log.Println("Connected to LiveKit room")
-//	return nil
-// }
+func (h *HostAgent) connectToLiveKit() error {
+	wsURL := getEnv("LIVEKIT_WS_URL", "ws://localhost:7880")
+	log.Printf("Connecting to LiveKit at: %s", wsURL)
+	log.Printf("Environment variables - LIVEKIT_API_KEY: %s, LIVEKIT_API_SECRET: %s",
+		getEnv("LIVEKIT_API_KEY", "not set"),
+		getEnv("LIVEKIT_API_SECRET", "not set"))
+
+	// WebRTC PeerConnection設定
+	config := webrtc.Configuration{
+		ICEServers: []webrtc.ICEServer{
+			{
+				URLs: []string{"stun:stun.l.google.com:19302"},
+			},
+		},
+	}
+
+	log.Println("Creating WebRTC PeerConnection...")
+	var err error
+	h.peerConnection, err = webrtc.NewPeerConnection(config)
+	if err != nil {
+		return fmt.Errorf("failed to create peer connection: %w", err)
+	}
+	log.Println("WebRTC PeerConnection created successfully")
+
+	// オーディオトラック作成
+	log.Println("Creating audio track...")
+	h.audioTrack, err = webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus},
+		"host-audio",
+		"radio-24-host",
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create audio track: %w", err)
+	}
+	log.Println("Audio track created successfully")
+
+	// トラックをPeerConnectionに追加
+	log.Println("Adding track to PeerConnection...")
+	_, err = h.peerConnection.AddTrack(h.audioTrack)
+	if err != nil {
+		return fmt.Errorf("failed to add track: %w", err)
+	}
+	log.Println("Track added to PeerConnection successfully")
+
+	// LiveKit認証トークン生成
+	apiKey := getEnv("LIVEKIT_API_KEY", "devkey")
+	apiSecret := getEnv("LIVEKIT_API_SECRET", "secret")
+
+	at := auth.NewAccessToken(apiKey, apiSecret)
+	at.SetIdentity("radio-24-host")
+	grant := &auth.VideoGrant{
+		Room:         "radio-24",
+		RoomJoin:     true,
+		CanPublish:   &[]bool{true}[0],
+		CanSubscribe: &[]bool{true}[0],
+	}
+	at.AddGrant(grant)
+	token, err := at.ToJWT()
+	if err != nil {
+		return fmt.Errorf("failed to create LiveKit token: %w", err)
+	}
+
+	log.Printf("Generated LiveKit token: %s", token)
+
+	// LiveKit WebSocket接続（認証ヘッダー付き）
+	headers := map[string][]string{
+		"Authorization": {fmt.Sprintf("Bearer %s", token)},
+	}
+	log.Printf("Connecting to LiveKit WebSocket: %s/rtc", wsURL)
+	h.livekitConn, _, err = websocket.DefaultDialer.Dial(wsURL+"/rtc", headers)
+	if err != nil {
+		log.Printf("Failed to connect to LiveKit: %v", err)
+		// LiveKit接続に失敗しても続行
+		return fmt.Errorf("failed to connect to LiveKit WebSocket: %w", err)
+	}
+
+	log.Println("Connected to LiveKit room successfully")
+	return nil
+}
 
 func (h *HostAgent) connectToOpenAI() error {
 	apiKey := getEnv("OPENAI_API_KEY", "")
@@ -144,6 +201,9 @@ func (h *HostAgent) connectToOpenAI() error {
 func (h *HostAgent) run() {
 	// 音声データ受信ループ
 	go h.handleOpenAIMessages()
+
+	// LiveKitメッセージハンドリング
+	go h.handleLiveKitMessages()
 
 	// 定期発話ループ（30秒ごと）
 	ticker := time.NewTicker(30 * time.Second)
@@ -208,10 +268,95 @@ func (h *HostAgent) sendMessage(content string) {
 }
 
 func (h *HostAgent) publishAudioToLiveKit(audioData string) {
-	// 音声データをLiveKitにPublish（一時的に無効化）
-	// 実際の実装では、base64デコードしてオーディオトラックとして送信
-	// ここでは簡略化
-	log.Printf("Audio data received: %d bytes", len(audioData))
+	if h.audioTrack == nil {
+		log.Println("Audio track not initialized, skipping audio publish")
+		return
+	}
+
+	// Base64デコード
+	audioBytes, err := base64.StdEncoding.DecodeString(audioData)
+	if err != nil {
+		log.Printf("Failed to decode audio data: %v", err)
+		return
+	}
+
+	// オーディオトラックに送信
+	if err := h.audioTrack.WriteSample(media.Sample{
+		Data:     audioBytes,
+		Duration: time.Millisecond * 20, // 20msのサンプル
+	}); err != nil {
+		log.Printf("Failed to write audio sample: %v", err)
+		return
+	}
+
+	log.Printf("Audio data published: %d bytes", len(audioBytes))
+}
+
+func (h *HostAgent) handleLiveKitMessages() {
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		default:
+			if h.livekitConn == nil {
+				time.Sleep(time.Second)
+				continue
+			}
+
+			var msg map[string]interface{}
+			if err := h.livekitConn.ReadJSON(&msg); err != nil {
+				log.Printf("LiveKit connection error: %v", err)
+				h.reconnectLiveKit()
+				return
+			}
+
+			// LiveKitメッセージの処理
+			if msgType, ok := msg["type"].(string); ok {
+				switch msgType {
+				case "offer":
+					// WebRTC Offer処理
+					h.handleWebRTCOffer(msg)
+				case "answer":
+					// WebRTC Answer処理
+					h.handleWebRTCAnswer(msg)
+				case "ice-candidate":
+					// ICE Candidate処理
+					h.handleICECandidate(msg)
+				}
+			}
+		}
+	}
+}
+
+func (h *HostAgent) handleWebRTCOffer(msg map[string]interface{}) {
+	// WebRTC Offerの処理（簡略化）
+	log.Println("Received WebRTC offer from LiveKit")
+}
+
+func (h *HostAgent) handleWebRTCAnswer(msg map[string]interface{}) {
+	// WebRTC Answerの処理（簡略化）
+	log.Println("Received WebRTC answer from LiveKit")
+}
+
+func (h *HostAgent) handleICECandidate(msg map[string]interface{}) {
+	// ICE Candidateの処理（簡略化）
+	log.Println("Received ICE candidate from LiveKit")
+}
+
+func (h *HostAgent) reconnectLiveKit() {
+	if h.reconnectTimer != nil {
+		h.reconnectTimer.Stop()
+	}
+
+	h.reconnectTimer = time.AfterFunc(5*time.Second, func() {
+		log.Println("Attempting to reconnect to LiveKit...")
+		if err := h.connectToLiveKit(); err != nil {
+			log.Printf("LiveKit reconnection failed: %v", err)
+			h.reconnectLiveKit() // 再試行
+		} else {
+			log.Println("Reconnected to LiveKit")
+		}
+	})
 }
 
 func (h *HostAgent) reconnectOpenAI() {
