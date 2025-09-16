@@ -44,10 +44,18 @@ var programDirector *director.Director
 var pttQueue *queue.Queue
 
 func main() {
-	// 環境変数読み込み
-	err := godotenv.Load()
+	// 環境変数読み込み（リポジトリルートの.envファイル）
+	err := godotenv.Load("../../.env")
 	if err != nil {
-		log.Println("No .env file found")
+		// Docker環境では/app/.envを試す
+		err = godotenv.Load("/app/.env")
+		if err != nil {
+			log.Println("No .env file found - using environment variables")
+		} else {
+			log.Println("Loaded .env file from /app/.env")
+		}
+	} else {
+		log.Println("Loaded .env file from repository root")
 	}
 
 	// DB接続

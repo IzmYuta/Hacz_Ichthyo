@@ -7,5 +7,6 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 ENV PORT=8080
 EXPOSE 8080
-COPY --from=build /app/server /server
-CMD ["/server"]
+WORKDIR /app
+COPY --from=build /app/server .
+CMD ["./server"]
