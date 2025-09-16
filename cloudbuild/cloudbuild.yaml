@@ -1,77 +1,38 @@
 steps:
   # Build API image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-f', 'infra/docker/api.Dockerfile', '-t', 'gcr.io/$PROJECT_ID/api:$COMMIT_SHA', '.']
+    args: ['build', '-f', 'infra/docker/api.Dockerfile', '-t', 'gcr.io/$PROJECT_ID/api:$_COMMIT_SHA', '.']
     id: 'build-api'
 
   # Build Web image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-f', 'infra/docker/web.Dockerfile', '-t', 'gcr.io/$PROJECT_ID/web:$COMMIT_SHA', '.']
+    args: ['build', '-f', 'infra/docker/web.Dockerfile', '-t', 'gcr.io/$PROJECT_ID/web:$_COMMIT_SHA', '.']
     id: 'build-web'
 
   # Build Host image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-f', 'infra/docker/host.Dockerfile', '-t', 'gcr.io/$PROJECT_ID/host:$COMMIT_SHA', '.']
+    args: ['build', '-f', 'infra/docker/host.Dockerfile', '-t', 'gcr.io/$PROJECT_ID/host:$_COMMIT_SHA', '.']
     id: 'build-host'
 
-  # Build LiveKit image
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-f', 'infra/livekit/Dockerfile', '-t', 'gcr.io/$PROJECT_ID/livekit:$COMMIT_SHA', 'infra/livekit/']
-    id: 'build-livekit'
+  # LiveKit Cloud is used instead of self-hosted LiveKit
 
   # Push images to Container Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/api:$COMMIT_SHA']
+    args: ['push', 'gcr.io/$PROJECT_ID/api:$_COMMIT_SHA']
     waitFor: ['build-api']
     id: 'push-api'
 
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/web:$COMMIT_SHA']
+    args: ['push', 'gcr.io/$PROJECT_ID/web:$_COMMIT_SHA']
     waitFor: ['build-web']
     id: 'push-web'
 
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/host:$COMMIT_SHA']
+    args: ['push', 'gcr.io/$PROJECT_ID/host:$_COMMIT_SHA']
     waitFor: ['build-host']
     id: 'push-host'
 
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/livekit:$COMMIT_SHA']
-    waitFor: ['build-livekit']
-    id: 'push-livekit'
-
-  # Deploy infrastructure with Terraform
-  - name: 'hashicorp/terraform:1.6'
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - |
-        cd terraform
-        terraform init
-        terraform plan -var="postgres_password=$$POSTGRES_PASSWORD" -var="openai_api_key=$$OPENAI_API_KEY" -var="livekit_api_key=$$LIVEKIT_API_KEY" -var="livekit_api_secret=$$LIVEKIT_API_SECRET"
-        terraform apply -auto-approve -var="postgres_password=$$POSTGRES_PASSWORD" -var="openai_api_key=$$OPENAI_API_KEY" -var="livekit_api_key=$$LIVEKIT_API_KEY" -var="livekit_api_secret=$$LIVEKIT_API_SECRET"
-    env:
-      - 'TF_VAR_postgres_password=$$POSTGRES_PASSWORD'
-      - 'TF_VAR_openai_api_key=$$OPENAI_API_KEY'
-      - 'TF_VAR_livekit_api_key=$$LIVEKIT_API_KEY'
-      - 'TF_VAR_livekit_api_secret=$$LIVEKIT_API_SECRET'
-    waitFor: ['push-api', 'push-web', 'push-host', 'push-livekit']
-    id: 'deploy-infrastructure'
-
-  # Run database migrations
-  - name: 'gcr.io/cloud-builders/gcloud'
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - |
-        # Wait for database to be ready
-        sleep 30
-        
-        # Run migrations
-        gcloud sql connect radio24-db --user=radio24-user --database=radio24 --quiet < db/init/001_init.sql
-        gcloud sql connect radio24-db --user=radio24-user --database=radio24 --quiet < db/migrations/002_schema.sql
-    waitFor: ['deploy-infrastructure']
-    id: 'run-migrations'
+  # LiveKit Cloud push not needed
 
   # Update Cloud Run services with new images
   - name: 'gcr.io/cloud-builders/gcloud'
@@ -80,48 +41,23 @@ steps:
       - '-c'
       - |
         # Update API service
-        gcloud run services update api --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/api:$COMMIT_SHA
+        gcloud run services update api --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/api:$_COMMIT_SHA
         
         # Update Web service
-        gcloud run services update web --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/web:$COMMIT_SHA
+        gcloud run services update web --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/web:$_COMMIT_SHA
         
         # Update Host service
-        gcloud run services update host --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/host:$COMMIT_SHA
+        gcloud run services update host --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/host:$_COMMIT_SHA
         
-        # Update LiveKit service
-        gcloud run services update livekit --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/livekit:$COMMIT_SHA
-    waitFor: ['run-migrations']
+        # LiveKit Cloud update not needed
+    waitFor: ['push-api', 'push-web', 'push-host']
     id: 'update-services'
-
-  # Health check
-  - name: 'gcr.io/cloud-builders/curl'
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - |
-        # Get service URLs
-        API_URL=$(gcloud run services describe api --region=asia-northeast1 --format="value(status.url)")
-        WEB_URL=$(gcloud run services describe web --region=asia-northeast1 --format="value(status.url)")
-        LIVEKIT_URL=$(gcloud run services describe livekit --region=asia-northeast1 --format="value(status.url)")
-        
-        # Wait for services to be ready
-        sleep 30
-        
-        # Health checks
-        curl -f $API_URL/health || exit 1
-        curl -f $WEB_URL || exit 1
-        curl -f $LIVEKIT_URL || exit 1
-        
-        echo "All services are healthy!"
-    waitFor: ['update-services']
-    id: 'health-check'
 
 # Store images in Container Registry
 images:
-  - 'gcr.io/$PROJECT_ID/api:$COMMIT_SHA'
-  - 'gcr.io/$PROJECT_ID/web:$COMMIT_SHA'
-  - 'gcr.io/$PROJECT_ID/host:$COMMIT_SHA'
-  - 'gcr.io/$PROJECT_ID/livekit:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/api:$_COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/web:$_COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/host:$_COMMIT_SHA'
 
 # Build options
 options:
@@ -130,8 +66,7 @@ options:
 
 # Substitution variables
 substitutions:
-  _REGION: 'asia-northeast1'
-  _SERVICE_ACCOUNT: 'radio24-deployer@radio24-project.iam.gserviceaccount.com'
+  _COMMIT_SHA: 'latest'
 
 # Timeout
 timeout: '1200s'
