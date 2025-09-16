@@ -308,40 +308,7 @@ resource "google_cloud_run_v2_service" "host" {
   depends_on = [google_project_service.apis]
 }
 
-# Cloud Run service for LiveKit
-resource "google_cloud_run_v2_service" "livekit" {
-  name     = "livekit"
-  location = var.region
-
-  template {
-    containers {
-      image = "gcr.io/${var.project_id}/livekit:latest"
-      
-      ports {
-        container_port = 7880
-      }
-
-      resources {
-        limits = {
-          cpu    = "2"
-          memory = "2Gi"
-        }
-      }
-
-      env {
-        name  = "LIVEKIT_KEYS"
-        value = "${google_secret_manager_secret.livekit_api_key.secret_id}:${google_secret_manager_secret.livekit_api_secret.secret_id}"
-      }
-    }
-
-    scaling {
-      min_instance_count = 0
-      max_instance_count = 3
-    }
-  }
-
-  depends_on = [google_project_service.apis]
-}
+# LiveKit Cloud is used instead of self-hosted LiveKit
 
 # IAM policy for Cloud Run services
 resource "google_cloud_run_service_iam_policy" "api" {
@@ -360,13 +327,7 @@ resource "google_cloud_run_service_iam_policy" "web" {
   policy_data = data.google_iam_policy.public.policy_data
 }
 
-resource "google_cloud_run_service_iam_policy" "livekit" {
-  location = google_cloud_run_v2_service.livekit.location
-  project  = google_cloud_run_v2_service.livekit.project
-  service  = google_cloud_run_v2_service.livekit.name
-
-  policy_data = data.google_iam_policy.public.policy_data
-}
+# LiveKit Cloud IAM policy not needed
 
 data "google_iam_policy" "public" {
   binding {
