@@ -1,0 +1,16 @@
+FROM node:20 as build
+WORKDIR /app
+COPY apps/web ./apps/web
+WORKDIR /app/apps/web
+ENV CI=true
+RUN npm i -g pnpm && pnpm i && pnpm build
+
+FROM node:20-slim
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+ENV PORT=3000
+EXPOSE 3000
+WORKDIR /app
+COPY --from=build /app/apps/web/.next ./.next
+COPY --from=build /app/apps/web/package.json ./package.json
+COPY --from=build /app/apps/web/node_modules ./node_modules
+CMD ["npx", "next", "start", "-p", "3000"]
