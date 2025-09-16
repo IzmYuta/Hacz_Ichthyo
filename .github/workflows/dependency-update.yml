@@ -1,0 +1,75 @@
+name: Dependency Updates
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Every Monday at 9 AM
+  workflow_dispatch:
+
+jobs:
+  update-dependencies:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "apps/web/package-lock.json"
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Update Go dependencies
+        run: |
+          cd services/api
+          go get -u ./...
+          go mod tidy
+
+          cd ../host
+          go get -u ./...
+          go mod tidy
+
+      - name: Update Node.js dependencies
+        run: |
+          cd apps/web
+          pnpm update --latest
+          pnpm audit fix
+
+      - name: Check for security vulnerabilities
+        run: |
+          cd services/api
+          go list -json -deps ./... | nancy sleuth
+
+          cd ../host
+          go list -json -deps ./... | nancy sleuth
+
+          cd ../../apps/web
+          pnpm audit --audit-level moderate
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update dependencies"
+          title: "Automated dependency updates"
+          body: |
+            This PR contains automated dependency updates.
+
+            ## Changes
+            - Updated Go dependencies in services/api and services/host
+            - Updated Node.js dependencies in apps/web
+            - Fixed security vulnerabilities where possible
+
+            ## Testing
+            Please review the changes and run tests before merging.
+          branch: dependency-updates
+          delete-branch: true

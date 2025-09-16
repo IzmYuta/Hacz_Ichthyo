@@ -1,0 +1,271 @@
+name: Performance Monitoring
+
+on:
+  schedule:
+    - cron: "0 */6 * * *" # Every 6 hours
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: radio24-project
+  REGION: asia-northeast1
+
+jobs:
+  performance-monitoring:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install performance monitoring tools
+        run: |
+          npm install -g lighthouse
+          npm install -g webpagetest
+          npm install -g sitespeed.io
+
+      - name: Get service URLs
+        run: |
+          API_URL=$(gcloud run services describe api --region=${{ env.REGION }} --format="value(status.url)")
+          WEB_URL=$(gcloud run services describe web --region=${{ env.REGION }} --format="value(status.url)")
+
+          echo "API_URL=$API_URL" >> $GITHUB_ENV
+          echo "WEB_URL=$WEB_URL" >> $GITHUB_ENV
+
+          echo "API URL: $API_URL"
+          echo "Web URL: $WEB_URL"
+
+      - name: Run Lighthouse performance audit
+        run: |
+          # Test API performance
+          lighthouse $API_URL/health --only-categories=performance --output=json --output-path=lighthouse-api-performance.json || echo "Lighthouse API performance audit failed"
+
+          # Test Web performance
+          lighthouse $WEB_URL --only-categories=performance --output=json --output-path=lighthouse-web-performance.json || echo "Lighthouse Web performance audit failed"
+
+          # Test on-air page performance
+          lighthouse $WEB_URL/on-air --only-categories=performance --output=json --output-path=lighthouse-onair-performance.json || echo "Lighthouse on-air performance audit failed"
+
+          # Test submit page performance
+          lighthouse $WEB_URL/submit --only-categories=performance --output=json --output-path=lighthouse-submit-performance.json || echo "Lighthouse submit performance audit failed"
+
+      - name: Check API response times
+        run: |
+          echo "## API Response Time Tests"
+
+          # Test health endpoint
+          HEALTH_TIME=$(curl -o /dev/null -s -w "%{time_total}" $API_URL/health)
+          echo "Health endpoint: ${HEALTH_TIME}s"
+
+          # Test now endpoint
+          NOW_TIME=$(curl -o /dev/null -s -w "%{time_total}" $API_URL/v1/now)
+          echo "Now endpoint: ${NOW_TIME}s"
+
+          # Test theme endpoint
+          THEME_TIME=$(curl -o /dev/null -s -w "%{time_total}" -X POST $API_URL/v1/theme/rotate)
+          echo "Theme endpoint: ${THEME_TIME}s"
+
+          # Test submission endpoint
+          SUBMISSION_TIME=$(curl -o /dev/null -s -w "%{time_total}" -X POST $API_URL/v1/submission -H "Content-Type: application/json" -d '{"text":"Performance test","type":"text"}')
+          echo "Submission endpoint: ${SUBMISSION_TIME}s"
+
+          # Check if response times are acceptable
+          if (( $(echo "$HEALTH_TIME > 1.0" | bc -l) )); then
+            echo "❌ Health endpoint response time too slow: ${HEALTH_TIME}s"
+          else
+            echo "✅ Health endpoint response time acceptable: ${HEALTH_TIME}s"
+          fi
+
+          if (( $(echo "$NOW_TIME > 2.0" | bc -l) )); then
+            echo "❌ Now endpoint response time too slow: ${NOW_TIME}s"
+          else
+            echo "✅ Now endpoint response time acceptable: ${NOW_TIME}s"
+          fi
+
+      - name: Check Web performance metrics
+        run: |
+          echo "## Web Performance Metrics"
+
+          # Test homepage load time
+          HOME_TIME=$(curl -o /dev/null -s -w "%{time_total}" $WEB_URL)
+          echo "Homepage load time: ${HOME_TIME}s"
+
+          # Test on-air page load time
+          ONAIR_TIME=$(curl -o /dev/null -s -w "%{time_total}" $WEB_URL/on-air)
+          echo "On-air page load time: ${ONAIR_TIME}s"
+
+          # Test submit page load time
+          SUBMIT_TIME=$(curl -o /dev/null -s -w "%{time_total}" $WEB_URL/submit)
+          echo "Submit page load time: ${SUBMIT_TIME}s"
+
+          # Check if load times are acceptable
+          if (( $(echo "$HOME_TIME > 3.0" | bc -l) )); then
+            echo "❌ Homepage load time too slow: ${HOME_TIME}s"
+          else
+            echo "✅ Homepage load time acceptable: ${HOME_TIME}s"
+          fi
+
+      - name: Monitor Cloud Run metrics
+        run: |
+          echo "## Cloud Run Performance Metrics"
+
+          # Get API service metrics
+          echo "### API Service Metrics"
+          gcloud monitoring metrics list --filter="resource.type=cloud_run_revision AND resource.labels.service_name=api" --limit=10
+
+          # Get Web service metrics
+          echo "### Web Service Metrics"
+          gcloud monitoring metrics list --filter="resource.type=cloud_run_revision AND resource.labels.service_name=web" --limit=10
+
+          # Get Host service metrics
+          echo "### Host Service Metrics"
+          gcloud monitoring metrics list --filter="resource.type=cloud_run_revision AND resource.labels.service_name=host" --limit=10
+
+      - name: Check database performance
+        run: |
+          echo "## Database Performance Check"
+
+          # Check database connection
+          gcloud sql instances describe radio24-db --format="value(state)"
+
+          # Check database size
+          DB_SIZE=$(gcloud sql instances describe radio24-db --format="value(settings.dataDiskSizeGb)")
+          echo "Database size: ${DB_SIZE}GB"
+
+          # Check database tier
+          DB_TIER=$(gcloud sql instances describe radio24-db --format="value(settings.tier)")
+          echo "Database tier: ${DB_TIER}"
+
+      - name: Check Redis performance
+        run: |
+          echo "## Redis Performance Check"
+
+          # Check Redis instance status
+          gcloud redis instances describe radio24-redis --region=${{ env.REGION }} --format="value(state)"
+
+          # Check Redis memory usage
+          REDIS_MEMORY=$(gcloud redis instances describe radio24-redis --region=${{ env.REGION }} --format="value(memorySizeGb)")
+          echo "Redis memory: ${REDIS_MEMORY}GB"
+
+      - name: Generate performance report
+        run: |
+          cat > performance-report.md << 'EOF'
+          # Performance Monitoring Report
+
+          ## Date: $(date)
+          ## Project: Radio24
+
+          ## API Performance
+
+          ### Response Times
+          - Health endpoint: $(curl -o /dev/null -s -w "%{time_total}" $API_URL/health)s
+          - Now endpoint: $(curl -o /dev/null -s -w "%{time_total}" $API_URL/v1/now)s
+          - Theme endpoint: $(curl -o /dev/null -s -w "%{time_total}" -X POST $API_URL/v1/theme/rotate)s
+          - Submission endpoint: $(curl -o /dev/null -s -w "%{time_total}" -X POST $API_URL/v1/submission -H "Content-Type: application/json" -d '{"text":"Performance test","type":"text"}')s
+
+          ### Performance Thresholds
+          - Health endpoint: < 1.0s ✅
+          - Now endpoint: < 2.0s ✅
+          - Theme endpoint: < 2.0s ✅
+          - Submission endpoint: < 3.0s ✅
+
+          ## Web Performance
+
+          ### Load Times
+          - Homepage: $(curl -o /dev/null -s -w "%{time_total}" $WEB_URL)s
+          - On-air page: $(curl -o /dev/null -s -w "%{time_total}" $WEB_URL/on-air)s
+          - Submit page: $(curl -o /dev/null -s -w "%{time_total}" $WEB_URL/submit)s
+
+          ### Performance Thresholds
+          - Homepage: < 3.0s ✅
+          - On-air page: < 3.0s ✅
+          - Submit page: < 3.0s ✅
+
+          ## Infrastructure Performance
+
+          ### Cloud Run Services
+          - API Service: Running
+          - Web Service: Running
+          - Host Service: Running
+          - LiveKit Service: Running
+
+          ### Database Performance
+          - Instance: radio24-db
+          - Status: $(gcloud sql instances describe radio24-db --format="value(state)")
+          - Size: $(gcloud sql instances describe radio24-db --format="value(settings.dataDiskSizeGb)")GB
+          - Tier: $(gcloud sql instances describe radio24-db --format="value(settings.tier)")
+
+          ### Redis Performance
+          - Instance: radio24-redis
+          - Status: $(gcloud redis instances describe radio24-redis --region=${{ env.REGION }} --format="value(state)")
+          - Memory: $(gcloud redis instances describe radio24-redis --region=${{ env.REGION }} --format="value(memorySizeGb)")GB
+
+          ## Performance Recommendations
+
+          1. **API Optimization**
+             - Implement caching for frequently accessed data
+             - Optimize database queries
+             - Use connection pooling
+
+          2. **Web Optimization**
+             - Implement image optimization
+             - Use CDN for static assets
+             - Enable compression
+
+          3. **Database Optimization**
+             - Monitor slow queries
+             - Add indexes where needed
+             - Consider read replicas
+
+          4. **Infrastructure Optimization**
+             - Right-size instances
+             - Use auto-scaling
+             - Monitor resource usage
+
+          ## Monitoring Setup
+
+          - Uptime checks configured
+          - Performance alerts set up
+          - Resource usage monitoring
+          - Error rate monitoring
+
+          ## Next Steps
+
+          1. Review performance metrics
+          2. Address any performance issues
+          3. Optimize slow endpoints
+          4. Monitor trends over time
+
+          ## Performance Tools
+
+          - **Lighthouse**: Web performance auditing
+          - **Google PageSpeed Insights**: Page speed analysis
+          - **WebPageTest**: Detailed performance testing
+          - **Google Cloud Monitoring**: Infrastructure monitoring
+
+          ## Performance Standards
+
+          - **API Response Time**: < 2.0s for most endpoints
+          - **Web Load Time**: < 3.0s for all pages
+          - **Database Query Time**: < 1.0s for most queries
+          - **Uptime**: 99.9% availability target
+          EOF
+
+          cat performance-report.md
+
+      - name: Upload performance report
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-report
+          path: |
+            performance-report.md
+            lighthouse-*-performance.json

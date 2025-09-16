@@ -1,0 +1,626 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "docs/**"
+      - "README.md"
+      - ".github/workflows/documentation.yml"
+
+jobs:
+  documentation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install documentation tools
+        run: |
+          npm install -g markdownlint-cli
+          npm install -g markdown-link-check
+
+      - name: Check markdown syntax
+        run: |
+          markdownlint docs/*.md README.md || echo "Markdown linting issues found"
+
+      - name: Check markdown links
+        run: |
+          find docs/ -name "*.md" -exec markdown-link-check {} \; || echo "Link checking issues found"
+
+      - name: Generate API documentation
+        run: |
+          # Create API documentation from Go code
+          cd services/api
+
+          # Generate Go documentation
+          godoc -http=:6060 &
+          GODOC_PID=$!
+          sleep 5
+
+          # Download documentation
+          wget -r -np -nH --cut-dirs=1 -R "index.html" http://localhost:6060/pkg/github.com/radio24/api/ || echo "API documentation generation failed"
+
+          kill $GODOC_PID || true
+
+      - name: Generate deployment documentation
+        run: |
+          cat > docs/deployment.md << 'EOF'
+          # Deployment Guide
+
+          ## Overview
+          This document describes how to deploy the Radio24 application to Google Cloud Platform.
+
+          ## Prerequisites
+          - Google Cloud Platform account
+          - GitHub repository with secrets configured
+          - Docker installed locally (for development)
+
+          ## Architecture
+          - **API Service**: Go-based REST API
+          - **Web Service**: Next.js frontend
+          - **Host Service**: AI radio host
+          - **LiveKit Service**: Real-time audio streaming
+          - **Database**: PostgreSQL with pgvector
+          - **Cache**: Redis
+
+          ## Deployment Process
+
+          ### 1. Infrastructure Setup
+          The infrastructure is automatically provisioned using GitHub Actions:
+          - Cloud SQL PostgreSQL instance
+          - Redis instance
+          - VPC connector for Cloud Run
+
+          ### 2. Application Deployment
+          Applications are deployed to Cloud Run:
+          - Container images are built and pushed to Container Registry
+          - Services are deployed with appropriate resource limits
+          - Environment variables are configured
+
+          ### 3. Monitoring Setup
+          - Uptime checks for all services
+          - Alerting policies for errors and performance
+          - Log-based metrics
+
+          ## Environment Variables
+
+          ### API Service
+          - `POSTGRES_HOST`: Database host
+          - `POSTGRES_USER`: Database user
+          - `POSTGRES_PASSWORD`: Database password
+          - `POSTGRES_DB`: Database name
+          - `OPENAI_API_KEY`: OpenAI API key
+          - `LIVEKIT_API_KEY`: LiveKit API key
+          - `LIVEKIT_API_SECRET`: LiveKit API secret
+
+          ### Web Service
+          - `NEXT_PUBLIC_API_BASE`: API base URL
+          - `NEXT_PUBLIC_OPENAI_REALTIME_MODEL`: OpenAI model
+
+          ### Host Service
+          - `LIVEKIT_API_KEY`: LiveKit API key
+          - `LIVEKIT_API_SECRET`: LiveKit API secret
+          - `OPENAI_API_KEY`: OpenAI API key
+          - `LIVEKIT_WS_URL`: LiveKit WebSocket URL
+
+          ## Scaling
+
+          ### Horizontal Scaling
+          - Cloud Run automatically scales based on traffic
+          - Maximum instances can be configured per service
+
+          ### Vertical Scaling
+          - Memory and CPU limits can be adjusted
+          - Database instance can be upgraded
+
+          ## Monitoring
+
+          ### Health Checks
+          - API: `/health`
+          - Web: `/`
+
+          ### Metrics
+          - Request latency
+          - Error rates
+          - Resource utilization
+
+          ### Alerts
+          - High error rate (>5%)
+          - High latency (>2s)
+          - High resource usage (>80%)
+
+          ## Troubleshooting
+
+          ### Common Issues
+          1. **Service not starting**: Check environment variables
+          2. **Database connection failed**: Verify Cloud SQL configuration
+          3. **High latency**: Check resource allocation
+
+          ### Logs
+          - Cloud Run logs: `gcloud logs read`
+          - Database logs: Cloud SQL console
+
+          ## Security
+
+          ### Network Security
+          - VPC connector for private communication
+          - HTTPS enforcement
+          - CORS configuration
+
+          ### Data Security
+          - Encrypted database
+          - Secure environment variables
+          - Regular security scans
+
+          ## Cost Optimization
+
+          ### Resource Optimization
+          - Right-size instances
+          - Use auto-scaling
+          - Monitor usage patterns
+
+          ### Cost Monitoring
+          - Set up billing alerts
+          - Review monthly costs
+          - Implement cost allocation
+
+          ## Backup and Recovery
+
+          ### Database Backups
+          - Automated daily backups
+          - Point-in-time recovery
+          - Cross-region replication
+
+          ### Disaster Recovery
+          - Multi-region deployment
+          - Automated failover
+          - Recovery procedures
+
+          ## Maintenance
+
+          ### Updates
+          - Automated dependency updates
+          - Security patches
+          - Feature releases
+
+          ### Monitoring
+          - Regular health checks
+          - Performance monitoring
+          - Security scanning
+          EOF
+
+      - name: Generate troubleshooting guide
+        run: |
+          cat > docs/troubleshooting.md << 'EOF'
+          # Troubleshooting Guide
+
+          ## Common Issues and Solutions
+
+          ### 1. Service Not Starting
+
+          **Symptoms:**
+          - Cloud Run service shows "Starting" status
+          - Health check failures
+          - Service unavailable errors
+
+          **Possible Causes:**
+          - Missing environment variables
+          - Database connection issues
+          - Invalid configuration
+
+          **Solutions:**
+          1. Check environment variables in Cloud Run console
+          2. Verify database connectivity
+          3. Review service logs
+
+          ### 2. Database Connection Failed
+
+          **Symptoms:**
+          - API returns 500 errors
+          - Database connection timeout
+          - Authentication failures
+
+          **Possible Causes:**
+          - Incorrect database credentials
+          - Network connectivity issues
+          - Database instance down
+
+          **Solutions:**
+          1. Verify database credentials
+          2. Check VPC connector configuration
+          3. Ensure database instance is running
+
+          ### 3. High Latency
+
+          **Symptoms:**
+          - Slow response times
+          - Timeout errors
+          - Poor user experience
+
+          **Possible Causes:**
+          - Insufficient resources
+          - Database performance issues
+          - Network latency
+
+          **Solutions:**
+          1. Increase memory/CPU allocation
+          2. Optimize database queries
+          3. Use Cloud CDN for static assets
+
+          ### 4. Memory Issues
+
+          **Symptoms:**
+          - Out of memory errors
+          - Service crashes
+          - Performance degradation
+
+          **Possible Causes:**
+          - Memory leaks
+          - Insufficient memory allocation
+          - High memory usage
+
+          **Solutions:**
+          1. Increase memory limits
+          2. Optimize memory usage
+          3. Review application code
+
+          ### 5. Authentication Issues
+
+          **Symptoms:**
+          - 401 Unauthorized errors
+          - Token validation failures
+          - Access denied errors
+
+          **Possible Causes:**
+          - Invalid API keys
+          - Expired tokens
+          - Incorrect permissions
+
+          **Solutions:**
+          1. Verify API keys
+          2. Check token expiration
+          3. Review IAM permissions
+
+          ## Debugging Steps
+
+          ### 1. Check Service Logs
+          ```bash
+          gcloud logs read --service=api --limit=100
+          gcloud logs read --service=web --limit=100
+          gcloud logs read --service=host --limit=100
+          ```
+
+          ### 2. Verify Service Status
+          ```bash
+          gcloud run services describe api --region=asia-northeast1
+          gcloud run services describe web --region=asia-northeast1
+          gcloud run services describe host --region=asia-northeast1
+          ```
+
+          ### 3. Test Health Endpoints
+          ```bash
+          curl -f https://api-xxx.run.app/health
+          curl -f https://web-xxx.run.app/
+          ```
+
+          ### 4. Check Database Connectivity
+          ```bash
+          gcloud sql connect radio24-db --user=postgres --database=radio24
+          ```
+
+          ### 5. Monitor Resource Usage
+          ```bash
+          gcloud monitoring metrics list --filter="resource.type=cloud_run_revision"
+          ```
+
+          ## Performance Optimization
+
+          ### 1. Database Optimization
+          - Use connection pooling
+          - Optimize queries
+          - Add indexes
+          - Monitor slow queries
+
+          ### 2. Application Optimization
+          - Implement caching
+          - Use compression
+          - Optimize images
+          - Minimize dependencies
+
+          ### 3. Infrastructure Optimization
+          - Right-size instances
+          - Use auto-scaling
+          - Implement CDN
+          - Optimize networking
+
+          ## Security Issues
+
+          ### 1. Unauthorized Access
+          - Review IAM permissions
+          - Check API keys
+          - Verify authentication flow
+
+          ### 2. Data Breaches
+          - Review access logs
+          - Check for suspicious activity
+          - Implement monitoring
+
+          ### 3. Vulnerabilities
+          - Run security scans
+          - Update dependencies
+          - Review code for vulnerabilities
+
+          ## Getting Help
+
+          ### 1. Documentation
+          - Check project documentation
+          - Review API documentation
+          - Consult troubleshooting guides
+
+          ### 2. Logs and Metrics
+          - Use Cloud Console
+          - Check monitoring dashboards
+          - Review alerting policies
+
+          ### 3. Support
+          - Contact development team
+          - Use issue tracking system
+          - Check community forums
+
+          ## Prevention
+
+          ### 1. Monitoring
+          - Set up comprehensive monitoring
+          - Implement alerting
+          - Regular health checks
+
+          ### 2. Testing
+          - Automated testing
+          - Load testing
+          - Security testing
+
+          ### 3. Maintenance
+          - Regular updates
+          - Security patches
+          - Performance reviews
+          EOF
+
+      - name: Generate API documentation
+        run: |
+          cat > docs/api.md << 'EOF'
+          # API Documentation
+
+          ## Overview
+          The Radio24 API provides endpoints for managing the 24-hour AI radio station.
+
+          ## Base URL
+          ```
+          https://api-xxx.run.app
+          ```
+
+          ## Authentication
+          Most endpoints require authentication using API keys or tokens.
+
+          ## Endpoints
+
+          ### Health Check
+          ```http
+          GET /health
+          ```
+
+          **Description:** Check API health status
+
+          **Response:**
+          ```json
+          {
+            "status": "healthy",
+            "timestamp": "2024-01-01T00:00:00Z"
+          }
+          ```
+
+          ### Now Playing
+          ```http
+          GET /v1/now
+          ```
+
+          **Description:** Get current playing information
+
+          **Response:**
+          ```json
+          {
+            "title": "Current Segment",
+            "theme": "Night Music",
+            "startTime": "2024-01-01T00:00:00Z"
+          }
+          ```
+
+          ### Advance Segment
+          ```http
+          POST /v1/admin/advance
+          ```
+
+          **Description:** Advance to next segment (admin only)
+
+          **Response:**
+          ```json
+          {
+            "title": "Next Segment",
+            "theme": "Morning News",
+            "startTime": "2024-01-01T01:00:00Z"
+          }
+          ```
+
+          ### Room Join
+          ```http
+          POST /v1/room/join
+          ```
+
+          **Description:** Get LiveKit room join token
+
+          **Request:**
+          ```json
+          {
+            "identity": "user123"
+          }
+          ```
+
+          **Response:**
+          ```json
+          {
+            "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+            "url": "wss://livekit-xxx.run.app"
+          }
+          ```
+
+          ### Submission
+          ```http
+          POST /v1/submission
+          ```
+
+          **Description:** Submit content for the radio
+
+          **Request:**
+          ```json
+          {
+            "text": "Hello Radio24!",
+            "type": "text"
+          }
+          ```
+
+          **Response:**
+          ```json
+          {
+            "status": "saved",
+            "id": "uuid-here",
+            "text": "Hello Radio24!",
+            "recommendations": [
+              {
+                "id": "uuid-here",
+                "text": "Similar content",
+                "similarity": 0.85
+              }
+            ]
+          }
+          ```
+
+          ### Theme Rotation
+          ```http
+          POST /v1/theme/rotate
+          ```
+
+          **Description:** Get current theme based on time
+
+          **Response:**
+          ```json
+          {
+            "title": "深夜の音楽",
+            "color": "#1a1a2e"
+          }
+          ```
+
+          ### Ephemeral Token
+          ```http
+          POST /v1/realtime/ephemeral
+          ```
+
+          **Description:** Get OpenAI Realtime API ephemeral token
+
+          **Response:**
+          ```json
+          {
+            "client_secret": "ephemeral-token-here",
+            "expires_at": 1234567890
+          }
+          ```
+
+          ## WebSocket Endpoints
+
+          ### PTT WebSocket
+          ```http
+          GET /ws/ptt
+          ```
+
+          **Description:** WebSocket for Push-to-Talk functionality
+
+          **Message Format:**
+          ```json
+          {
+            "type": "ptt",
+            "kind": "question",
+            "text": "User message"
+          }
+          ```
+
+          ## Error Responses
+
+          ### 400 Bad Request
+          ```json
+          {
+            "error": "Invalid request",
+            "message": "Missing required field"
+          }
+          ```
+
+          ### 401 Unauthorized
+          ```json
+          {
+            "error": "Unauthorized",
+            "message": "Invalid API key"
+          }
+          ```
+
+          ### 500 Internal Server Error
+          ```json
+          {
+            "error": "Internal server error",
+            "message": "Database connection failed"
+          }
+          ```
+
+          ## Rate Limiting
+
+          - 100 requests per minute per IP
+          - 1000 requests per hour per API key
+
+          ## CORS
+
+          - Allowed origins: Configured via environment variables
+          - Allowed methods: GET, POST, PUT, DELETE, OPTIONS
+          - Allowed headers: Content-Type, Authorization
+
+          ## Examples
+
+          ### JavaScript
+          ```javascript
+          const response = await fetch('https://api-xxx.run.app/v1/now');
+          const data = await response.json();
+          console.log(data);
+          ```
+
+          ### cURL
+          ```bash
+          curl -X GET https://api-xxx.run.app/v1/now
+          ```
+
+          ### Python
+          ```python
+          import requests
+
+          response = requests.get('https://api-xxx.run.app/v1/now')
+          data = response.json()
+          print(data)
+          ```
+          EOF
+
+      - name: Upload documentation
+        uses: actions/upload-artifact@v3
+        with:
+          name: documentation
+          path: docs/

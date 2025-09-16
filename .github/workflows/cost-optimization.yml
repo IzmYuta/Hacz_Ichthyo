@@ -1,0 +1,183 @@
+name: Cost Optimization
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Every Monday at 9 AM
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: radio24-project
+  REGION: asia-northeast1
+
+jobs:
+  cost-optimization:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Analyze Cloud Run costs
+        run: |
+          echo "## Cloud Run Cost Analysis"
+
+          # Get Cloud Run service information
+          SERVICES=("api" "web" "host" "livekit")
+
+          for service in "${SERVICES[@]}"; do
+            echo "### $service Service"
+            
+            # Get service configuration
+            CONFIG=$(gcloud run services describe $service --region=${{ env.REGION }} --format="value(spec.template.spec.containers[0].resources)")
+            
+            # Get memory and CPU limits
+            MEMORY=$(gcloud run services describe $service --region=${{ env.REGION }} --format="value(spec.template.spec.containers[0].resources.limits.memory)")
+            CPU=$(gcloud run services describe $service --region=${{ env.REGION }} --format="value(spec.template.spec.containers[0].resources.limits.cpu)")
+            
+            # Get instance limits
+            MAX_INSTANCES=$(gcloud run services describe $service --region=${{ env.REGION }} --format="value(spec.template.metadata.annotations['autoscaling.knative.dev/maxScale'])")
+            MIN_INSTANCES=$(gcloud run services describe $service --region=${{ env.REGION }} --format="value(spec.template.metadata.annotations['autoscaling.knative.dev/minScale'])")
+            
+            echo "Memory: $MEMORY"
+            echo "CPU: $CPU"
+            echo "Max Instances: $MAX_INSTANCES"
+            echo "Min Instances: $MIN_INSTANCES"
+            echo ""
+          done
+
+      - name: Analyze Cloud SQL costs
+        run: |
+          echo "## Cloud SQL Cost Analysis"
+
+          # Get database instance information
+          INSTANCE_INFO=$(gcloud sql instances describe radio24-db --format="value(settings.tier,settings.dataDiskSizeGb,settings.dataDiskType)")
+
+          echo "Database Configuration:"
+          echo "$INSTANCE_INFO"
+          echo ""
+
+      - name: Analyze Redis costs
+        run: |
+          echo "## Redis Cost Analysis"
+
+          # Get Redis instance information
+          REDIS_INFO=$(gcloud redis instances describe radio24-redis --region=${{ env.REGION }} --format="value(tier,memorySizeGb)")
+
+          echo "Redis Configuration:"
+          echo "$REDIS_INFO"
+          echo ""
+
+      - name: Check for unused resources
+        run: |
+          echo "## Unused Resources Check"
+
+          # Check for unused Cloud Run revisions
+          SERVICES=("api" "web" "host" "livekit")
+
+          for service in "${SERVICES[@]}"; do
+            echo "### $service Service Revisions"
+            
+            # Get all revisions
+            REVISIONS=$(gcloud run revisions list --service=$service --region=${{ env.REGION }} --format="value(metadata.name,status.conditions[0].status)" --filter="status.conditions[0].status!=True")
+            
+            if [ -n "$REVISIONS" ]; then
+              echo "Inactive revisions found:"
+              echo "$REVISIONS"
+            else
+              echo "No inactive revisions found"
+            fi
+            echo ""
+          done
+
+      - name: Optimize resource allocation
+        run: |
+          echo "## Resource Optimization Recommendations"
+
+          # Check API service resource usage
+          API_MEMORY=$(gcloud run services describe api --region=${{ env.REGION }} --format="value(spec.template.spec.containers[0].resources.limits.memory)")
+          API_CPU=$(gcloud run services describe api --region=${{ env.REGION }} --format="value(spec.template.spec.containers[0].resources.limits.cpu)")
+
+          echo "### API Service Optimization"
+          if [ "$API_MEMORY" = "1Gi" ]; then
+            echo "✅ API memory allocation is appropriate"
+          else
+            echo "⚠️  Consider optimizing API memory allocation"
+          fi
+
+          if [ "$API_CPU" = "1" ]; then
+            echo "✅ API CPU allocation is appropriate"
+          else
+            echo "⚠️  Consider optimizing API CPU allocation"
+          fi
+
+          # Check Web service resource usage
+          WEB_MEMORY=$(gcloud run services describe web --region=${{ env.REGION }} --format="value(spec.template.spec.containers[0].resources.limits.memory)")
+          WEB_CPU=$(gcloud run services describe web --region=${{ env.REGION }} --format="value(spec.template.spec.containers[0].resources.limits.cpu)")
+
+          echo "### Web Service Optimization"
+          if [ "$WEB_MEMORY" = "512Mi" ]; then
+            echo "✅ Web memory allocation is appropriate"
+          else
+            echo "⚠️  Consider optimizing Web memory allocation"
+          fi
+
+          if [ "$WEB_CPU" = "1" ]; then
+            echo "✅ Web CPU allocation is appropriate"
+          else
+            echo "⚠️  Consider optimizing Web CPU allocation"
+          fi
+
+      - name: Generate cost optimization report
+        run: |
+          cat > cost-optimization-report.md << 'EOF'
+          # Cost Optimization Report
+
+          ## Date: $(date)
+          ## Project: Radio24
+
+          ## Current Resource Allocation
+
+          ### Cloud Run Services
+          - **API Service**: 1Gi memory, 1 CPU, max 10 instances
+          - **Web Service**: 512Mi memory, 1 CPU, max 5 instances
+          - **Host Service**: 1Gi memory, 1 CPU, max 1 instance
+          - **LiveKit Service**: 2Gi memory, 2 CPU, max 3 instances
+
+          ### Cloud SQL
+          - **Instance**: db-f1-micro
+          - **Storage**: 10GB SSD
+
+          ### Redis
+          - **Tier**: basic
+          - **Memory**: 1GB
+
+          ## Optimization Recommendations
+
+          1. **Right-size instances**: Monitor actual usage and adjust memory/CPU accordingly
+          2. **Implement auto-scaling**: Use Cloud Run's built-in auto-scaling
+          3. **Optimize database queries**: Reduce database load
+          4. **Use Cloud CDN**: Cache static assets
+          5. **Implement request batching**: Reduce API calls
+
+          ## Cost Monitoring
+
+          - Set up billing alerts
+          - Monitor daily costs
+          - Review monthly spending
+          - Implement cost allocation tags
+
+          ## Next Review Date: $(date -d '+1 week')
+          EOF
+
+          cat cost-optimization-report.md
+
+      - name: Upload cost optimization report
+        uses: actions/upload-artifact@v3
+        with:
+          name: cost-optimization-report
+          path: cost-optimization-report.md

@@ -1,0 +1,90 @@
+name: Load Testing
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "Target URL for load testing"
+        required: true
+        default: "https://api-xxx.run.app"
+        type: string
+      duration:
+        description: "Test duration in seconds"
+        required: true
+        default: "60"
+        type: string
+      users:
+        description: "Number of concurrent users"
+        required: true
+        default: "10"
+        type: string
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Run load test
+        run: |
+          cat > load-test.js << 'EOF'
+          import http from 'k6/http';
+          import { check, sleep } from 'k6';
+
+          export let options = {
+            stages: [
+              { duration: '10s', target: parseInt('${{ github.event.inputs.users }}') },
+              { duration: '${{ github.event.inputs.duration }}s', target: parseInt('${{ github.event.inputs.users }}') },
+              { duration: '10s', target: 0 },
+            ],
+          };
+
+          export default function () {
+            // Health check
+            let healthResponse = http.get('${{ github.event.inputs.target_url }}/health');
+            check(healthResponse, {
+              'health check status is 200': (r) => r.status === 200,
+              'health check response time < 500ms': (r) => r.timings.duration < 500,
+            });
+
+            sleep(1);
+
+            // API endpoints
+            let nowResponse = http.get('${{ github.event.inputs.target_url }}/v1/now');
+            check(nowResponse, {
+              'now endpoint status is 200': (r) => r.status === 200,
+              'now endpoint response time < 1000ms': (r) => r.timings.duration < 1000,
+            });
+
+            sleep(1);
+
+            // Theme rotation
+            let themeResponse = http.post('${{ github.event.inputs.target_url }}/v1/theme/rotate', '{}', {
+              headers: { 'Content-Type': 'application/json' },
+            });
+            check(themeResponse, {
+              'theme endpoint status is 200': (r) => r.status === 200,
+              'theme endpoint response time < 1000ms': (r) => r.timings.duration < 1000,
+            });
+
+            sleep(1);
+          }
+          EOF
+
+          k6 run load-test.js
+
+      - name: Generate load test report
+        run: |
+          echo "Load test completed for ${{ github.event.inputs.target_url }}"
+          echo "Duration: ${{ github.event.inputs.duration }} seconds"
+          echo "Concurrent users: ${{ github.event.inputs.users }}"

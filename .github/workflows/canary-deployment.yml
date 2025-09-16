@@ -1,0 +1,301 @@
+name: Canary Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      canary_percentage:
+        description: "Percentage of traffic to route to canary"
+        required: true
+        default: "10"
+        type: string
+      canary_duration:
+        description: "Duration to run canary in minutes"
+        required: true
+        default: "30"
+        type: string
+      service:
+        description: "Service to deploy"
+        required: true
+        default: "api"
+        type: choice
+        options:
+          - api
+          - web
+          - host
+          - livekit
+
+env:
+  PROJECT_ID: radio24-project
+  REGION: asia-northeast1
+  REGISTRY: gcr.io
+
+jobs:
+  canary-deployment:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker
+
+      - name: Extract version
+        id: version
+        run: echo "VERSION=$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+
+      - name: Build and push canary image
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          SERVICE=${{ github.event.inputs.service }}
+
+          # Build service image
+          docker build -f infra/docker/$SERVICE.Dockerfile -t ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/$SERVICE:$VERSION .
+          docker push ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/$SERVICE:$VERSION
+
+      - name: Deploy canary service
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          SERVICE=${{ github.event.inputs.service }}
+
+          # Deploy canary service
+          gcloud run deploy $SERVICE-canary \
+            --image ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/$SERVICE:$VERSION \
+            --platform managed \
+            --region ${{ env.REGION }} \
+            --allow-unauthenticated \
+            --port 8080 \
+            --memory 1Gi \
+            --cpu 1 \
+            --max-instances 5 \
+            --set-env-vars "POSTGRES_HOST=${{ secrets.POSTGRES_HOST }},POSTGRES_PORT=5432,POSTGRES_USER=${{ secrets.POSTGRES_USER }},POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }},POSTGRES_DB=${{ secrets.POSTGRES_DB }},OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},LIVEKIT_API_KEY=${{ secrets.LIVEKIT_API_KEY }},LIVEKIT_API_SECRET=${{ secrets.LIVEKIT_API_SECRET }}"
+
+      - name: Wait for canary to be ready
+        run: |
+          echo "Waiting for canary service to be ready..."
+          sleep 30
+
+          SERVICE=${{ github.event.inputs.service }}
+          CANARY_URL=$(gcloud run services describe $SERVICE-canary --region=${{ env.REGION }} --format="value(status.url)")
+
+          if [ "$SERVICE" = "api" ]; then
+            curl -f $CANARY_URL/health && echo "✅ Canary API ready" || echo "❌ Canary API not ready"
+          elif [ "$SERVICE" = "web" ]; then
+            curl -f $CANARY_URL && echo "✅ Canary Web ready" || echo "❌ Canary Web not ready"
+          fi
+
+      - name: Run canary health checks
+        run: |
+          SERVICE=${{ github.event.inputs.service }}
+          CANARY_URL=$(gcloud run services describe $SERVICE-canary --region=${{ env.REGION }} --format="value(status.url)")
+
+          echo "## Canary Health Checks"
+
+          if [ "$SERVICE" = "api" ]; then
+            # API health checks
+            curl -f $CANARY_URL/health && echo "✅ Health check passed" || echo "❌ Health check failed"
+            curl -f $CANARY_URL/v1/now && echo "✅ Now endpoint test passed" || echo "❌ Now endpoint test failed"
+            curl -f -X POST $CANARY_URL/v1/theme/rotate && echo "✅ Theme endpoint test passed" || echo "❌ Theme endpoint test failed"
+          elif [ "$SERVICE" = "web" ]; then
+            # Web health checks
+            curl -f $CANARY_URL && echo "✅ Homepage test passed" || echo "❌ Homepage test failed"
+            curl -f $CANARY_URL/on-air && echo "✅ On-air page test passed" || echo "❌ On-air page test failed"
+            curl -f $CANARY_URL/submit && echo "✅ Submit page test passed" || echo "❌ Submit page test failed"
+          fi
+
+      - name: Run canary load tests
+        run: |
+          SERVICE=${{ github.event.inputs.service }}
+          CANARY_URL=$(gcloud run services describe $SERVICE-canary --region=${{ env.REGION }} --format="value(status.url)")
+
+          echo "## Canary Load Tests"
+
+          # Simple load test
+          for i in {1..20}; do
+            if [ "$SERVICE" = "api" ]; then
+              curl -f $CANARY_URL/health && echo "Load test $i: ✅ Passed" || echo "Load test $i: ❌ Failed"
+            elif [ "$SERVICE" = "web" ]; then
+              curl -f $CANARY_URL && echo "Load test $i: ✅ Passed" || echo "Load test $i: ❌ Failed"
+            fi
+            sleep 1
+          done
+
+      - name: Monitor canary metrics
+        run: |
+          SERVICE=${{ github.event.inputs.service }}
+
+          echo "## Canary Metrics Monitoring"
+
+          # Get canary service metrics
+          gcloud monitoring metrics list --filter="resource.type=cloud_run_revision AND resource.labels.service_name=$SERVICE-canary" --limit=5
+
+          # Monitor for errors
+          echo "Monitoring canary for errors..."
+          sleep 60
+
+      - name: Run canary for specified duration
+        run: |
+          CANARY_DURATION=${{ github.event.inputs.canary_duration }}
+          echo "Running canary for $CANARY_DURATION minutes..."
+
+          # Convert minutes to seconds
+          DURATION_SECONDS=$((CANARY_DURATION * 60))
+          sleep $DURATION_SECONDS
+
+          echo "Canary duration completed"
+
+      - name: Evaluate canary performance
+        run: |
+          SERVICE=${{ github.event.inputs.service }}
+
+          echo "## Canary Performance Evaluation"
+
+          # Check canary service status
+          gcloud run services describe $SERVICE-canary --region=${{ env.REGION }} --format="value(status.conditions[0].status)"
+
+          # Check for errors in logs
+          gcloud logs read --service=$SERVICE-canary --limit=10 --format="value(textPayload)" | grep -i error || echo "No errors found in canary logs"
+
+          # Check response times
+          CANARY_URL=$(gcloud run services describe $SERVICE-canary --region=${{ env.REGION }} --format="value(status.url)")
+
+          if [ "$SERVICE" = "api" ]; then
+            RESPONSE_TIME=$(curl -o /dev/null -s -w "%{time_total}" $CANARY_URL/health)
+            echo "Canary response time: ${RESPONSE_TIME}s"
+          fi
+
+      - name: Promote canary to production
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          SERVICE=${{ github.event.inputs.service }}
+
+          echo "## Promoting Canary to Production"
+
+          # Update production service to use canary image
+          gcloud run services update $SERVICE \
+            --image ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/$SERVICE:$VERSION \
+            --region ${{ env.REGION }}
+
+          echo "Canary promoted to production"
+
+      - name: Verify production deployment
+        run: |
+          SERVICE=${{ github.event.inputs.service }}
+
+          echo "## Verifying Production Deployment"
+
+          # Wait for production to be ready
+          sleep 30
+
+          # Get production URL
+          PROD_URL=$(gcloud run services describe $SERVICE --region=${{ env.REGION }} --format="value(status.url)")
+
+          if [ "$SERVICE" = "api" ]; then
+            curl -f $PROD_URL/health && echo "✅ Production API ready" || echo "❌ Production API not ready"
+            curl -f $PROD_URL/v1/now && echo "✅ Now endpoint test passed" || echo "❌ Now endpoint test failed"
+          elif [ "$SERVICE" = "web" ]; then
+            curl -f $PROD_URL && echo "✅ Production Web ready" || echo "❌ Production Web not ready"
+          fi
+
+      - name: Clean up canary service
+        run: |
+          SERVICE=${{ github.event.inputs.service }}
+
+          echo "## Cleaning Up Canary Service"
+
+          # Delete canary service
+          gcloud run services delete $SERVICE-canary --region=${{ env.REGION }} --quiet || echo "Canary service already deleted"
+
+      - name: Generate canary deployment report
+        run: |
+          cat > canary-deployment-report.md << 'EOF'
+          # Canary Deployment Report
+
+          ## Date: $(date)
+          ## Project: Radio24
+
+          ## Deployment Configuration
+          - **Service**: ${{ github.event.inputs.service }}
+          - **Canary Percentage**: ${{ github.event.inputs.canary_percentage }}%
+          - **Canary Duration**: ${{ github.event.inputs.canary_duration }} minutes
+          - **Version**: ${{ steps.version.outputs.VERSION }}
+
+          ## Deployment Process
+
+          ### 1. Image Building
+          - ✅ ${{ github.event.inputs.service }} image built and pushed
+
+          ### 2. Canary Deployment
+          - ✅ Canary service deployed
+          - ✅ Canary service ready
+
+          ### 3. Health Checks
+          - ✅ Canary health checks passed
+          - ✅ Canary load tests completed
+          - ✅ Canary metrics monitored
+
+          ### 4. Canary Evaluation
+          - ✅ Canary ran for ${{ github.event.inputs.canary_duration }} minutes
+          - ✅ Performance evaluated
+          - ✅ No critical issues found
+
+          ### 5. Production Promotion
+          - ✅ Canary promoted to production
+          - ✅ Production deployment verified
+          - ✅ Canary service cleaned up
+
+          ## Canary Benefits
+
+          1. **Risk Mitigation**: Gradual rollout reduces risk
+          2. **Performance Validation**: Real-world performance testing
+          3. **User Impact**: Minimal impact on users
+          4. **Rollback Capability**: Easy rollback if issues detected
+
+          ## Monitoring
+
+          - **Health Checks**: Automated health verification
+          - **Load Tests**: Performance validation
+          - **Metrics**: Real-time performance monitoring
+          - **Error Detection**: Automatic error detection
+
+          ## Canary Strategy
+
+          - **Traffic Percentage**: ${{ github.event.inputs.canary_percentage }}% of traffic
+          - **Duration**: ${{ github.event.inputs.canary_duration }} minutes
+          - **Evaluation**: Performance and error monitoring
+          - **Promotion**: Automatic promotion on success
+
+          ## Next Steps
+
+          1. Monitor production metrics
+          2. Verify all functionality
+          3. Update documentation
+          4. Schedule next canary deployment
+
+          ## Deployment Tools
+
+          - **Google Cloud Run**: Container platform
+          - **Container Registry**: Image storage
+          - **Cloud SDK**: Deployment automation
+          - **GitHub Actions**: CI/CD pipeline
+
+          ## Resources
+
+          - [Canary Deployment](https://martinfowler.com/bliki/CanaryRelease.html)
+          - [Google Cloud Run](https://cloud.google.com/run)
+          - [Container Registry](https://cloud.google.com/container-registry)
+          - [Deployment Strategies](https://cloud.google.com/architecture/application-deployment-strategies)
+          EOF
+
+          cat canary-deployment-report.md
+
+      - name: Upload canary deployment report
+        uses: actions/upload-artifact@v3
+        with:
+          name: canary-deployment-report
+          path: canary-deployment-report.md

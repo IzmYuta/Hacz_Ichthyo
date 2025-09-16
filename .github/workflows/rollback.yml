@@ -1,0 +1,66 @@
+name: Rollback Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Service to rollback (api, web, host, livekit)"
+        required: true
+        default: "api"
+        type: choice
+        options:
+          - api
+          - web
+          - host
+          - livekit
+      previous_sha:
+        description: "Previous commit SHA to rollback to"
+        required: true
+        type: string
+
+env:
+  PROJECT_ID: radio24-project
+  REGION: asia-northeast1
+  REGISTRY: gcr.io
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Rollback Cloud Run service
+        run: |
+          SERVICE_NAME=${{ github.event.inputs.service }}
+          PREVIOUS_SHA=${{ github.event.inputs.previous_sha }}
+
+          echo "Rolling back $SERVICE_NAME to commit $PREVIOUS_SHA"
+
+          gcloud run deploy $SERVICE_NAME \
+            --image ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/$SERVICE_NAME:$PREVIOUS_SHA \
+            --platform managed \
+            --region ${{ env.REGION }} \
+            --quiet
+
+      - name: Verify rollback
+        run: |
+          SERVICE_NAME=${{ github.event.inputs.service }}
+          SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=${{ env.REGION }} --format="value(status.url)")
+
+          echo "Service $SERVICE_NAME is now running at: $SERVICE_URL"
+
+          # Health check
+          if [ "$SERVICE_NAME" = "api" ]; then
+            curl -f "$SERVICE_URL/health" || exit 1
+          elif [ "$SERVICE_NAME" = "web" ]; then
+            curl -f "$SERVICE_URL" || exit 1
+          fi
+
+          echo "Rollback completed successfully"

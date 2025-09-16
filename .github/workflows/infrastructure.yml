@@ -1,0 +1,93 @@
+name: Infrastructure Deployment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - "db/**"
+      - ".github/workflows/infrastructure.yml"
+
+env:
+  PROJECT_ID: radio24-project
+  REGION: asia-northeast1
+
+jobs:
+  deploy-infrastructure:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Enable required APIs
+        run: |
+          gcloud services enable cloudbuild.googleapis.com
+          gcloud services enable run.googleapis.com
+          gcloud services enable sqladmin.googleapis.com
+          gcloud services enable container.googleapis.com
+          gcloud services enable redis.googleapis.com
+
+      - name: Create Cloud SQL instance
+        run: |
+          gcloud sql instances create radio24-db \
+            --database-version=POSTGRES_15 \
+            --tier=db-f1-micro \
+            --region=${{ env.REGION }} \
+            --storage-type=SSD \
+            --storage-size=10GB \
+            --storage-auto-increase \
+            --backup \
+            --enable-ip-alias \
+            --network=default \
+            --no-assign-ip \
+            --root-password=${{ secrets.POSTGRES_ROOT_PASSWORD }} || echo "Instance may already exist"
+
+      - name: Create database
+        run: |
+          gcloud sql databases create radio24 \
+            --instance=radio24-db || echo "Database may already exist"
+
+      - name: Create database user
+        run: |
+          gcloud sql users create radio24-user \
+            --instance=radio24-db \
+            --password=${{ secrets.POSTGRES_PASSWORD }} || echo "User may already exist"
+
+      - name: Set up Cloud SQL Auth Proxy
+        run: |
+          wget https://dl.google.com/cloudsql/cloud_sql_proxy.linux.amd64 -O cloud_sql_proxy
+          chmod +x cloud_sql_proxy
+
+      - name: Start Cloud SQL Auth Proxy
+        run: |
+          ./cloud_sql_proxy -instances=${{ env.PROJECT_ID }}:${{ env.REGION }}:radio24-db=tcp:5432 &
+          sleep 10
+
+      - name: Run database migrations
+        run: |
+          PGPASSWORD=${{ secrets.POSTGRES_PASSWORD }} psql -h localhost -U radio24-user -d radio24 -f db/init/001_init.sql
+          PGPASSWORD=${{ secrets.POSTGRES_PASSWORD }} psql -h localhost -U radio24-user -d radio24 -f db/migrations/002_schema.sql
+
+      - name: Create Redis instance
+        run: |
+          gcloud redis instances create radio24-redis \
+            --size=1 \
+            --region=${{ env.REGION }} \
+            --redis-version=redis_7_0 \
+            --tier=basic || echo "Redis instance may already exist"
+
+      - name: Create VPC connector for Cloud Run
+        run: |
+          gcloud compute networks vpc-access connectors create radio24-connector \
+            --region=${{ env.REGION }} \
+            --subnet=default \
+            --subnet-project=${{ env.PROJECT_ID }} \
+            --min-instances=2 \
+            --max-instances=3 || echo "VPC connector may already exist"

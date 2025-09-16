@@ -1,0 +1,84 @@
+name: Monitoring Setup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/monitoring.yml"
+      - "monitoring/**"
+
+env:
+  PROJECT_ID: radio24-project
+  REGION: asia-northeast1
+
+jobs:
+  setup-monitoring:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Enable monitoring APIs
+        run: |
+          gcloud services enable monitoring.googleapis.com
+          gcloud services enable logging.googleapis.com
+          gcloud services enable alerting.googleapis.com
+
+      - name: Create uptime checks
+        run: |
+          # API uptime check
+          gcloud monitoring uptime create \
+            --display-name="Radio24 API Health Check" \
+            --http-check-path="/health" \
+            --hostname="${{ secrets.API_DOMAIN }}" \
+            --port=443 \
+            --use-ssl \
+            --check-interval=60s \
+            --timeout=10s
+
+          # Web uptime check
+          gcloud monitoring uptime create \
+            --display-name="Radio24 Web Health Check" \
+            --http-check-path="/" \
+            --hostname="${{ secrets.WEB_DOMAIN }}" \
+            --port=443 \
+            --use-ssl \
+            --check-interval=60s \
+            --timeout=10s
+
+      - name: Create alerting policies
+        run: |
+          # High error rate alert
+          gcloud alpha monitoring policies create \
+            --policy-from-file=monitoring/error-rate-policy.yaml
+
+          # High latency alert
+          gcloud alpha monitoring policies create \
+            --policy-from-file=monitoring/latency-policy.yaml
+
+          # Resource usage alerts
+          gcloud alpha monitoring policies create \
+            --policy-from-file=monitoring/resource-usage-policy.yaml
+
+      - name: Setup log-based metrics
+        run: |
+          # API error rate metric
+          gcloud logging metrics create api_error_rate \
+            --description="API error rate" \
+            --log-filter='resource.type="cloud_run_revision" AND severity>=ERROR' \
+            --metric-type=GAUGE \
+            --value-type=DOUBLE
+
+          # Request count metric
+          gcloud logging metrics create request_count \
+            --description="Request count" \
+            --log-filter='resource.type="cloud_run_revision" AND httpRequest.requestMethod!=""' \
+            --metric-type=COUNTER \
+            --value-type=INT64

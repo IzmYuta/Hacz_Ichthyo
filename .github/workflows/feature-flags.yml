@@ -1,0 +1,395 @@
+name: Feature Flags Management
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "apps/web/**"
+      - ".github/workflows/feature-flags.yml"
+
+jobs:
+  feature-flags:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "apps/web/package-lock.json"
+
+      - name: Install dependencies
+        run: |
+          cd apps/web
+          npm install -g pnpm
+          pnpm install
+
+      - name: Check feature flags in code
+        run: |
+          cd apps/web
+
+          echo "## Feature Flags Check"
+
+          # Check for feature flag usage
+          if grep -r "feature.*flag\|FEATURE_\|ENABLE_" . --exclude-dir=node_modules --exclude-dir=.next; then
+            echo "✅ Feature flags found in code"
+          else
+            echo "⚠️  No feature flags found in code"
+          fi
+
+          # Check for environment variable usage
+          if grep -r "process.env.NEXT_PUBLIC_" . --exclude-dir=node_modules --exclude-dir=.next; then
+            echo "✅ Environment variables found for feature flags"
+          else
+            echo "⚠️  No environment variables found for feature flags"
+          fi
+
+          # Check for conditional rendering
+          if grep -r "if.*process.env\|&&.*process.env" . --exclude-dir=node_modules --exclude-dir=.next; then
+            echo "✅ Conditional rendering found"
+          else
+            echo "⚠️  No conditional rendering found"
+          fi
+
+      - name: Validate feature flag configuration
+        run: |
+          cd apps/web
+
+          echo "## Feature Flag Configuration Validation"
+
+          # Check for feature flag configuration file
+          if [ -f "feature-flags.json" ]; then
+            echo "✅ Feature flags configuration file found"
+            cat feature-flags.json
+          else
+            echo "⚠️  No feature flags configuration file found"
+          fi
+
+          # Check for feature flag types
+          if grep -r "boolean\|string\|number" . --exclude-dir=node_modules --exclude-dir=.next | grep -i "feature\|flag"; then
+            echo "✅ Feature flag types found"
+          else
+            echo "⚠️  No feature flag types found"
+          fi
+
+      - name: Test feature flag functionality
+        run: |
+          cd apps/web
+
+          echo "## Feature Flag Functionality Test"
+
+          # Create test feature flag configuration
+          cat > test-feature-flags.json << 'EOF'
+          {
+            "features": {
+              "newUI": {
+                "enabled": true,
+                "description": "New user interface",
+                "type": "boolean"
+              },
+              "betaFeatures": {
+                "enabled": false,
+                "description": "Beta features",
+                "type": "boolean"
+              },
+              "maxUploadSize": {
+                "enabled": true,
+                "value": "10MB",
+                "description": "Maximum upload size",
+                "type": "string"
+              },
+              "apiVersion": {
+                "enabled": true,
+                "value": "v2",
+                "description": "API version",
+                "type": "string"
+              }
+            }
+          }
+          EOF
+
+          echo "Test feature flags configuration created"
+          cat test-feature-flags.json
+
+      - name: Generate feature flag documentation
+        run: |
+          cat > feature-flags-documentation.md << 'EOF'
+          # Feature Flags Documentation
+
+          ## Overview
+          Feature flags allow you to control the visibility and behavior of features in your application without deploying new code.
+
+          ## Feature Flag Types
+
+          ### Boolean Flags
+          - **Purpose**: Enable/disable features
+          - **Example**: `newUI: true`
+          - **Usage**: Conditional rendering, feature toggles
+
+          ### String Flags
+          - **Purpose**: Configure feature behavior
+          - **Example**: `apiVersion: "v2"`
+          - **Usage**: API endpoints, configuration values
+
+          ### Number Flags
+          - **Purpose**: Set numeric values
+          - **Example**: `maxRetries: 3`
+          - **Usage**: Retry logic, limits, thresholds
+
+          ## Implementation
+
+          ### Environment Variables
+          ```bash
+          # Feature flags as environment variables
+          NEXT_PUBLIC_NEW_UI=true
+          NEXT_PUBLIC_BETA_FEATURES=false
+          NEXT_PUBLIC_API_VERSION=v2
+          NEXT_PUBLIC_MAX_UPLOAD_SIZE=10MB
+          ```
+
+          ### Configuration File
+          ```json
+          {
+            "features": {
+              "newUI": {
+                "enabled": true,
+                "description": "New user interface",
+                "type": "boolean"
+              },
+              "betaFeatures": {
+                "enabled": false,
+                "description": "Beta features",
+                "type": "boolean"
+              },
+              "apiVersion": {
+                "enabled": true,
+                "value": "v2",
+                "description": "API version",
+                "type": "string"
+              }
+            }
+          }
+          ```
+
+          ### React Component Usage
+          ```tsx
+          import { useFeatureFlag } from '@/hooks/useFeatureFlag';
+
+          function MyComponent() {
+            const { isEnabled } = useFeatureFlag('newUI');
+            
+            return (
+              <div>
+                {isEnabled ? (
+                  <NewUIComponent />
+                ) : (
+                  <OldUIComponent />
+                )}
+              </div>
+            );
+          }
+          ```
+
+          ## Feature Flag Management
+
+          ### Adding New Flags
+          1. Define flag in configuration
+          2. Add environment variable
+          3. Implement in code
+          4. Test functionality
+          5. Deploy to production
+
+          ### Updating Flags
+          1. Update configuration
+          2. Update environment variables
+          3. Test changes
+          4. Deploy update
+
+          ### Removing Flags
+          1. Remove from configuration
+          2. Remove environment variables
+          3. Remove code references
+          4. Deploy cleanup
+
+          ## Best Practices
+
+          1. **Naming**: Use descriptive names
+          2. **Documentation**: Document purpose and usage
+          3. **Testing**: Test all flag combinations
+          4. **Monitoring**: Monitor flag usage
+          5. **Cleanup**: Remove unused flags
+
+          ## Security Considerations
+
+          1. **Client-side**: Flags are visible to users
+          2. **Server-side**: Validate flag values
+          3. **Access Control**: Restrict flag access
+          4. **Audit**: Log flag changes
+
+          ## Monitoring
+
+          - **Usage Metrics**: Track flag usage
+          - **Performance Impact**: Monitor performance
+          - **Error Rates**: Track errors by flag
+          - **User Behavior**: Analyze user behavior
+
+          ## Tools
+
+          - **LaunchDarkly**: Feature flag platform
+          - **Split.io**: Feature flag platform
+          - **Unleash**: Open-source feature flags
+          - **Custom Solution**: Build your own
+
+          ## Resources
+
+          - [Feature Flags Best Practices](https://martinfowler.com/articles/feature-toggles.html)
+          - [LaunchDarkly](https://launchdarkly.com/)
+          - [Split.io](https://split.io/)
+          - [Unleash](https://www.getunleash.io/)
+          EOF
+
+          cat feature-flags-documentation.md
+
+      - name: Create feature flag configuration
+        run: |
+          cd apps/web
+
+          # Create feature flags configuration file
+          cat > feature-flags.json << 'EOF'
+          {
+            "features": {
+              "newUI": {
+                "enabled": false,
+                "description": "New user interface",
+                "type": "boolean",
+                "defaultValue": false
+              },
+              "betaFeatures": {
+                "enabled": false,
+                "description": "Beta features",
+                "type": "boolean",
+                "defaultValue": false
+              },
+              "apiVersion": {
+                "enabled": true,
+                "value": "v1",
+                "description": "API version",
+                "type": "string",
+                "defaultValue": "v1"
+              },
+              "maxUploadSize": {
+                "enabled": true,
+                "value": "5MB",
+                "description": "Maximum upload size",
+                "type": "string",
+                "defaultValue": "5MB"
+              },
+              "enableAnalytics": {
+                "enabled": true,
+                "description": "Enable analytics tracking",
+                "type": "boolean",
+                "defaultValue": true
+              },
+              "enableNotifications": {
+                "enabled": false,
+                "description": "Enable push notifications",
+                "type": "boolean",
+                "defaultValue": false
+              }
+            }
+          }
+          EOF
+
+          echo "Feature flags configuration created"
+
+      - name: Create feature flag hook
+        run: |
+          cd apps/web
+
+          # Create feature flag hook
+          mkdir -p hooks
+          cat > hooks/useFeatureFlag.ts << 'EOF'
+          import { useState, useEffect } from 'react';
+
+          interface FeatureFlag {
+            enabled: boolean;
+            value?: string | number;
+            description: string;
+            type: 'boolean' | 'string' | 'number';
+            defaultValue?: boolean | string | number;
+          }
+
+          interface FeatureFlags {
+            [key: string]: FeatureFlag;
+          }
+
+          export function useFeatureFlag(flagName: string) {
+            const [flag, setFlag] = useState<FeatureFlag | null>(null);
+            const [loading, setLoading] = useState(true);
+            
+            useEffect(() => {
+              // Load feature flags from configuration
+              fetch('/feature-flags.json')
+                .then(response => response.json())
+                .then((data: { features: FeatureFlags }) => {
+                  const featureFlag = data.features[flagName];
+                  if (featureFlag) {
+                    setFlag(featureFlag);
+                  }
+                  setLoading(false);
+                })
+                .catch(error => {
+                  console.error('Failed to load feature flags:', error);
+                  setLoading(false);
+                });
+            }, [flagName]);
+            
+            const isEnabled = flag?.enabled ?? false;
+            const value = flag?.value ?? flag?.defaultValue;
+            
+            return {
+              isEnabled,
+              value,
+              loading,
+              flag
+            };
+          }
+
+          export function useFeatureFlags() {
+            const [flags, setFlags] = useState<FeatureFlags>({});
+            const [loading, setLoading] = useState(true);
+            
+            useEffect(() => {
+              fetch('/feature-flags.json')
+                .then(response => response.json())
+                .then((data: { features: FeatureFlags }) => {
+                  setFlags(data.features);
+                  setLoading(false);
+                })
+                .catch(error => {
+                  console.error('Failed to load feature flags:', error);
+                  setLoading(false);
+                });
+            }, []);
+            
+            return {
+              flags,
+              loading
+            };
+          }
+          EOF
+
+          echo "Feature flag hook created"
+
+      - name: Upload feature flags documentation
+        uses: actions/upload-artifact@v3
+        with:
+          name: feature-flags-documentation
+          path: |
+            feature-flags-documentation.md
+            apps/web/feature-flags.json
+            apps/web/hooks/useFeatureFlag.ts
