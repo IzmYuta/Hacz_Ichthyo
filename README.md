@@ -186,7 +186,7 @@ ALLOWED_ORIGIN=http://localhost:3000
 
 ### 必要なツール
 
-- **Go 1.22+** - APIサーバー開発
+- **Go 1.23+** - APIサーバー開発
 - **Node.js 20+** - Webアプリ開発
 - **pnpm** - パッケージマネージャー
 - **Docker** - データベース環境
