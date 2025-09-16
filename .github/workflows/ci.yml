@@ -9,7 +9,6 @@ on:
 env:
   PROJECT_ID: radio24-project
   REGION: asia-northeast1
-  REGISTRY: gcr.io
 
 jobs:
   test:
@@ -79,7 +78,7 @@ jobs:
           cd apps/web
           pnpm lint
 
-  build-and-deploy:
+  cloud-build-test:
     needs: test
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
@@ -98,69 +97,52 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Configure Docker
-        run: gcloud auth configure-docker
-
-      - name: Build and push API image
+      - name: Run Cloud Build test
         run: |
-          docker build -f infra/docker/api.Dockerfile -t ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/api:${{ github.sha }} .
-          docker push ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/api:${{ github.sha }}
+          gcloud builds submit \
+            --config cloudbuild/cloudbuild-test.yaml \
+            --substitutions _COMMIT_SHA=${{ github.sha }}
 
-      - name: Build and push Web image
-        run: |
-          docker build -f infra/docker/web.Dockerfile -t ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/web:${{ github.sha }} .
-          docker push ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/web:${{ github.sha }}
+  cloud-build-deploy:
+    needs: cloud-build-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
 
-      - name: Build and push Host image
-        run: |
-          docker build -f infra/docker/host.Dockerfile -t ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/host:${{ github.sha }} .
-          docker push ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/host:${{ github.sha }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Deploy to Cloud Run (API)
-        run: |
-          gcloud run deploy api \
-            --image ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/api:${{ github.sha }} \
-            --platform managed \
-            --region ${{ env.REGION }} \
-            --allow-unauthenticated \
-            --port 8080 \
-            --memory 1Gi \
-            --cpu 1 \
-            --max-instances 10 \
-            --set-env-vars "POSTGRES_HOST=${{ secrets.POSTGRES_HOST }},POSTGRES_PORT=5432,POSTGRES_USER=${{ secrets.POSTGRES_USER }},POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }},POSTGRES_DB=${{ secrets.POSTGRES_DB }},OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},LIVEKIT_API_KEY=${{ secrets.LIVEKIT_API_KEY }},LIVEKIT_API_SECRET=${{ secrets.LIVEKIT_API_SECRET }}"
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Deploy to Cloud Run (Web)
-        run: |
-          gcloud run deploy web \
-            --image ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/web:${{ github.sha }} \
-            --platform managed \
-            --region ${{ env.REGION }} \
-            --allow-unauthenticated \
-            --port 3000 \
-            --memory 512Mi \
-            --cpu 1 \
-            --max-instances 5 \
-            --set-env-vars "NEXT_PUBLIC_API_BASE=${{ secrets.API_BASE_URL }},NEXT_PUBLIC_OPENAI_REALTIME_MODEL=gpt-realtime"
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
 
-      - name: Deploy to Cloud Run (Host)
+      - name: Deploy with Cloud Build
         run: |
-          gcloud run deploy host \
-            --image ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/host:${{ github.sha }} \
-            --platform managed \
-            --region ${{ env.REGION }} \
-            --no-allow-unauthenticated \
-            --port 8080 \
-            --memory 1Gi \
-            --cpu 1 \
-            --max-instances 1 \
-            --set-env-vars "LIVEKIT_API_KEY=${{ secrets.LIVEKIT_API_KEY }},LIVEKIT_API_SECRET=${{ secrets.LIVEKIT_API_SECRET }},OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},LIVEKIT_WS_URL=${{ secrets.LIVEKIT_WS_URL }}"
+          gcloud builds submit \
+            --config cloudbuild/cloudbuild.yaml \
+            --substitutions _COMMIT_SHA=${{ github.sha }} \
+            --substitutions _POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} \
+            --substitutions _OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }} \
+            --substitutions _LIVEKIT_API_KEY=${{ secrets.LIVEKIT_API_KEY }} \
+            --substitutions _LIVEKIT_API_SECRET=${{ secrets.LIVEKIT_API_SECRET }}
 
-      - name: Update Cloud Run services
+      - name: Get service URLs
         run: |
-          # APIサービスのURLを取得
           API_URL=$(gcloud run services describe api --region=${{ env.REGION }} --format="value(status.url)")
+          WEB_URL=$(gcloud run services describe web --region=${{ env.REGION }} --format="value(status.url)")
+          LIVEKIT_URL=$(gcloud run services describe livekit --region=${{ env.REGION }} --format="value(status.url)")
 
-          # Webサービスの環境変数を更新
-          gcloud run services update web \
-            --region ${{ env.REGION }} \
-            --update-env-vars "NEXT_PUBLIC_API_BASE=$API_URL"
+          echo "API_URL=$API_URL" >> $GITHUB_ENV
+          echo "WEB_URL=$WEB_URL" >> $GITHUB_ENV
+          echo "LIVEKIT_URL=$LIVEKIT_URL" >> $GITHUB_ENV
+
+          echo "🚀 Deployment completed!"
+          echo "API: $API_URL"
+          echo "Web: $WEB_URL"
+          echo "LiveKit: $LIVEKIT_URL"

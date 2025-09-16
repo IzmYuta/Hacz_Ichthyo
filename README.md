@@ -1,306 +1,276 @@
-# Radio-24 - 24時間AIラジオ局
+# 24時間AIラジオシステム
 
-24時間放送のAIラジオ局。PTTで話しかけてAIが生声で応答します。
+## 概要
 
-## 🚀 クイックスタート
+24時間連続でAI DJが放送を行うラジオシステムです。OpenAI Realtime APIとLiveKitを使用してリアルタイム音声配信を実現します。
 
-### 方法1: ローカル開発環境
+## アーキテクチャ
 
-#### 1. 環境構築
+- **フロントエンド**: Next.js (React)
+- **バックエンド**: Go (API + Host)
+- **リアルタイム通信**: LiveKit (WebRTC SFU)
+- **データベース**: PostgreSQL + pgvector
+- **キャッシュ**: Redis
+- **インフラ**: Google Cloud Platform
+- **CI/CD**: GitHub Actions + Cloud Build
 
-```bash
-# 完全な環境構築を実行
-make setup
+## セットアップ
 
-# または個別に実行
-make setup-env    # 環境設定ファイル作成
-make setup-db     # データベース起動・初期化
-make setup-api    # APIサーバー依存関係インストール
-make setup-web    # Webアプリ依存関係インストール
-```
+### 前提条件
 
-#### 2. 開発環境起動
+- Google Cloud Platform アカウント
+- GitHub アカウント
+- Docker
+- Terraform
+- gcloud CLI
 
-```bash
-# 全サービス起動（推奨）
-make dev
-
-# または個別起動
-make dev-db       # データベースのみ
-make dev-api      # APIサーバーのみ
-make dev-web      # Webアプリのみ
-```
-
-#### 3. アクセス
-
-- **Webアプリ**: <http://localhost:3000>
-- **APIサーバー**: <http://localhost:8080>
-- **データベース**: localhost:5432
-
-### 方法2: Docker環境（推奨）
-
-#### 1. Docker環境構築
+### 1. GCPプロジェクトの設定
 
 ```bash
-# Docker環境を一発構築
-make setup-docker
+# プロジェクトIDを設定
+export PROJECT_ID="radio24-project"
+export REGION="asia-northeast1"
 
-# または個別に実行
-make docker-build  # Dockerイメージビルド
-make docker-up     # 全サービス起動
+# プロジェクトを設定
+gcloud config set project $PROJECT_ID
+
+# 必要なAPIを有効化
+gcloud services enable cloudbuild.googleapis.com
+gcloud services enable run.googleapis.com
+gcloud services enable sqladmin.googleapis.com
+gcloud services enable container.googleapis.com
+gcloud services enable redis.googleapis.com
+gcloud services enable compute.googleapis.com
+gcloud services enable vpcaccess.googleapis.com
+gcloud services enable secretmanager.googleapis.com
 ```
 
-#### 2. アクセス
-
-- **Webアプリ**: <http://localhost:3000>
-- **APIサーバー**: <http://localhost:8080>
-- **データベース**: localhost:5432
-
-#### 3. Docker管理コマンド
+### 2. サービスアカウントの作成
 
 ```bash
-make docker-status   # サービス状態確認
-make docker-logs     # ログ表示
-make docker-restart  # サービス再起動
-make docker-down     # サービス停止
-make docker-clean    # 完全クリーンアップ
+# サービスアカウントの作成
+gcloud iam service-accounts create radio24-deployer \
+  --display-name="Radio24 Deployer" \
+  --description="Service account for Radio24 deployment"
+
+# 必要な権限の付与
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:radio24-deployer@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/run.admin"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:radio24-deployer@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/storage.admin"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:radio24-deployer@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/cloudsql.admin"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:radio24-deployer@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/redis.admin"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:radio24-deployer@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/monitoring.admin"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:radio24-deployer@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.admin"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:radio24-deployer@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/compute.admin"
+
+# サービスアカウントキーの作成
+gcloud iam service-accounts keys create radio24-deployer-key.json \
+  --iam-account=radio24-deployer@$PROJECT_ID.iam.gserviceaccount.com
 ```
 
-## 📋 利用可能なコマンド
+### 3. GitHub Secretsの設定
 
-### 環境構築
+GitHubリポジトリの **Settings > Secrets and variables > Actions** で以下のシークレットを設定：
 
-- `make setup` - 完全な環境構築
-- `make setup-env` - 環境設定ファイル作成
-- `make setup-db` - データベース起動・初期化
-- `make setup-api` - APIサーバー依存関係インストール
-- `make setup-web` - Webアプリ依存関係インストール
+```
+GCP_SA_KEY: <サービスアカウントキーのJSON内容>
+POSTGRES_PASSWORD: <データベースユーザーパスワード>
+OPENAI_API_KEY: <OpenAI APIキー>
+LIVEKIT_API_KEY: <LiveKit APIキー>
+LIVEKIT_API_SECRET: <LiveKit APIシークレット>
+```
 
-### 開発環境
+### 4. Terraform変数の設定
 
-- `make dev` - 開発環境起動（データベース + API + Web）
-- `make dev-db` - データベースのみ起動
-- `make dev-api` - APIサーバー起動
-- `make dev-web` - Webアプリ起動
-- `make dev-api-bg` - APIサーバーをバックグラウンド起動
-- `make dev-web-bg` - Webアプリをバックグラウンド起動
+```bash
+# terraform.tfvarsファイルを作成
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 
-### ビルド
+# 必要な変数を設定
+cat > terraform/terraform.tfvars << EOF
+project_id = "$PROJECT_ID"
+region     = "$REGION"
+postgres_password = "your-secure-password"
+openai_api_key    = "your-openai-api-key"
+livekit_api_key   = "your-livekit-api-key"
+livekit_api_secret = "your-livekit-api-secret"
+EOF
+```
 
-- `make build` - 本番用ビルド実行
-- `make build-api` - APIサーバービルド
-- `make build-web` - Webアプリビルド
+### 5. インフラストラクチャのデプロイ
 
-### Docker
+#### Docker Composeを使用する場合
 
-- `make setup-docker` - Docker環境構築（推奨）
-- `make docker-build` - Dockerイメージビルド
-- `make docker-up` - Docker Composeで全サービス起動
-- `make docker-down` - Docker Composeで全サービス停止
-- `make docker-restart` - Docker Composeで全サービス再起動
-- `make docker-logs` - Docker Composeのログ表示
-- `make docker-status` - Docker Composeのサービス状態確認
-- `make docker-clean` - Docker Composeのデータとボリューム削除
+```bash
+# 環境変数ファイルを作成
+cp .env.example .env
+# .envファイルに必要な値を設定
+
+# GCPサービスアカウントキーを配置
+cp /path/to/your/service-account-key.json gcp-key.json
+
+# Terraformでインフラをデプロイ
+make tf-init    # Terraformを初期化
+make tf-plan    # プランを確認
+make tf-apply   # インフラをデプロイ
+```
+
+#### スクリプトを使用する場合
+
+```bash
+# Terraformスクリプトを使用
+./scripts/terraform.sh init
+./scripts/terraform.sh plan
+./scripts/terraform.sh apply
+```
+
+#### 直接Terraformを使用する場合
+
+```bash
+# Terraformでインフラをデプロイ
+cd terraform
+terraform init
+terraform plan
+terraform apply
+```
+
+### 6. アプリケーションのデプロイ
+
+```bash
+# Cloud Buildでアプリケーションをデプロイ
+make cb-deploy
+# または
+gcloud builds submit --config cloudbuild/cloudbuild.yaml
+```
+
+## 開発
+
+### ローカル開発環境
+
+```bash
+# Docker Composeでローカル環境を起動
+docker-compose up -d
+
+# サービスにアクセス
+# Web: http://localhost:3000
+# API: http://localhost:8080
+# LiveKit: http://localhost:7880
+```
+
+### Terraform操作
+
+```bash
+# Makefileを使用
+make tf-init      # Terraformを初期化
+make tf-plan      # プランを確認
+make tf-apply     # インフラをデプロイ
+make tf-destroy   # リソースを削除
+make tf-output    # 出力を表示
+make tf-validate  # 設定を検証
+make tf-fmt       # ファイルをフォーマット
+
+# スクリプトを使用
+./scripts/terraform.sh init
+./scripts/terraform.sh plan
+./scripts/terraform.sh apply
+
+# Docker Composeを直接使用
+docker-compose --profile terraform run --rm terraform terraform plan
+docker-compose --profile terraform run --rm terraform terraform apply
+```
 
 ### テスト
 
-- `make test` - 全テスト実行
-- `make test-api` - APIサーバーテスト
-- `make test-web` - Webアプリテスト
+```bash
+# Goテスト
+cd services/api && go test ./...
+cd services/host && go test ./...
 
-### データベース
+# フロントエンドテスト
+cd apps/web && pnpm test
 
-- `make db-migrate` - データベースマイグレーション実行
-- `make db-reset` - データベースリセット
-- `make db-shell` - データベースシェル接続
+# 統合テスト
+gcloud builds submit --config cloudbuild/cloudbuild-test.yaml
+```
 
-### クリーンアップ
+## デプロイメント
 
-- `make clean` - 全クリーンアップ実行
-- `make clean-build` - ビルド成果物削除
-- `make clean-deps` - 依存関係削除
-- `make clean-docker` - Docker関連クリーンアップ
+### 自動デプロイ
 
-### ユーティリティ
+mainブランチへのプッシュで自動的にデプロイされます：
 
-- `make status` - サービス状態確認
-- `make logs` - ログ表示
-- `make logs-api` - APIサーバーログ表示
-- `make logs-web` - Webアプリログ表示
-- `make logs-db` - データベースログ表示
+1. **テスト**: GitHub Actionsでテストを実行
+2. **ビルド**: Cloud BuildでDockerイメージをビルド
+3. **デプロイ**: Terraformでインフラを更新、Cloud Runにデプロイ
 
-### コード品質
-
-- `make format` - コードフォーマット実行
-- `make lint` - リンター実行
-- `make check` - コード品質チェック実行
-
-### デプロイ
-
-- `make deploy` - デプロイ用ビルド実行
-- `make deploy-staging` - ステージング環境デプロイ
-- `make deploy-prod` - 本番環境デプロイ
-
-## 🛠️ 技術スタック
-
-### フロントエンド
-
-- **Next.js 15** + **React 19** (App Router)
-- **Chakra UI v3** - UIコンポーネントライブラリ
-- **TypeScript** - 型安全な開発
-
-### バックエンド
-
-- **Go** - APIサーバー
-- **PostgreSQL** + **pgvector** - ベクトルデータベース
-- **OpenAI Realtime API** - WebRTC音声対話
-- **OpenAI Embeddings API** - テキストベクトル化
-
-### インフラ
-
-- **Docker** + **Docker Compose** - 開発環境
-- **Cloud Run** - デプロイ先
-
-## 🔧 設定
-
-### 環境変数
-
-`.env` ファイルに以下の設定が必要です：
+### 手動デプロイ
 
 ```bash
-# OpenAI API
-OPENAI_API_KEY=sk-your-api-key-here
-OPENAI_REALTIME_MODEL=gpt-realtime
-OPENAI_REALTIME_VOICE=marin
-
-# データベース
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
-POSTGRES_DB=radio24
-POSTGRES_PORT=5432
-
-# APIサーバー
-API_PORT=8080
-ALLOWED_ORIGIN=http://localhost:3000
+# Cloud Buildでデプロイ
+gcloud builds submit --config cloudbuild/cloudbuild.yaml \
+  --substitutions _COMMIT_SHA=$(git rev-parse HEAD)
 ```
 
-### 必要なツール
+## 監視
 
-- **Go 1.23+** - APIサーバー開発
-- **Node.js 20+** - Webアプリ開発
-- **pnpm** - パッケージマネージャー
-- **Docker** - データベース環境
+### サービスURL
 
-## 📁 プロジェクト構造
+デプロイ後、以下のURLでサービスにアクセスできます：
 
-```
-radio24/
-├── apps/
-│   └── web/                 # Next.js Webアプリ
-├── services/
-│   └── api/                 # Go APIサーバー
-├── db/
-│   ├── init/                # データベース初期化
-│   └── migrations/          # マイグレーション
-├── infra/
-│   └── docker/              # Docker設定
-├── docs/                    # ドキュメント
-├── docker-compose.yml       # Docker Compose設定
-├── Makefile                 # 開発用コマンド
-└── README.md               # このファイル
-```
+- **API**: `https://api-<hash>-uc.a.run.app`
+- **Web**: `https://web-<hash>-uc.a.run.app`
+- **LiveKit**: `https://livekit-<hash>-uc.a.run.app`
 
-## 🎯 主要機能
-
-### 1. WebRTC音声対話
-
-- **PTT (Push-to-Talk)** - ボタンを押しながら話しかける
-- **リアルタイム音声応答** - AIが生声で応答
-- **字幕表示** - 音声の内容をテキストで表示
-
-### 2. 投稿システム
-
-- **テキスト投稿** - ユーザーがテキストを投稿
-- **ベクトル検索** - 類似した投稿を自動検索
-- **レコメンド機能** - 関連する投稿を表示
-
-### 3. テーマシステム
-
-- **動的テーマ変更** - ラジオのテーマを動的に変更
-- **背景色変更** - テーマに応じて背景色を変更
-
-## 🚀 デプロイ
-
-### Cloud Run へのデプロイ
+### ヘルスチェック
 
 ```bash
-# デプロイ用ビルド
-make deploy
+# APIヘルスチェック
+curl https://api-<hash>-uc.a.run.app/health
 
-# ステージング環境
-make deploy-staging
+# Webヘルスチェック
+curl https://web-<hash>-uc.a.run.app
 
-# 本番環境
-make deploy-prod
+# LiveKitヘルスチェック
+curl https://livekit-<hash>-uc.a.run.app
 ```
 
-## アーキテクチャ
-```mermaid
-flowchart LR
-  %% --- Clients ---
-  subgraph Client["Listener (Web: Next.js 15 + React 19)"]
-    UI["/on-air UI\n(LiveKit SDK)"] -->|Join| SFU
-    UI -->|PTT投稿| API
-  end
+## トラブルシューティング
 
-  %% --- LiveKit ---
-  subgraph SFU["LiveKit (SFU / Room: radio-24)"]
-    HostPub["Host Agent\n(Publish音声)"] --> SFU
-    SFU --> UI
-  end
+### よくある問題
 
-  %% --- Server Layer ---
-  subgraph Server["Backend (Go / Cloud Run)"]
-    API["API\n(Go)\n- /v1/room/join\n- /v1/submission\n- /ws/ptt\n- /v1/now"] 
-    Queue["PTT Queue"]
-    Dir["Program Director\n(時報/進行)"]
-    Mix["Mixer\n(ダッキング)"]
+1. **認証エラー**: サービスアカウントキーと権限を確認
+2. **デプロイ失敗**: Cloud Buildログを確認
+3. **データベース接続エラー**: VPCコネクタの設定を確認
 
-    API --> Queue
-    API --> DB
-    Dir --> Host
-    Dir --> API
-    Queue --> Dir
-    Dir --> Mix
-    Mix --> SFU
-  end
+### ログの確認
 
-  %% --- Host Agent ---
-  subgraph Host["Host Agent (常時発話AI)\n(Go/Node + OpenAI Realtime)"]
-    RT["OpenAI Realtime API\n(gpt-realtime, Marin/Cedar)"]
-    HostProc["Hostプロセス\n(session.update/response.create)"]
-    HostProc <--> RT
-    HostProc --> SFU
-    Dir --> HostProc
-  end
+```bash
+# Cloud Runログ
+gcloud logging read "resource.type=cloud_run_revision" --limit=100
 
-  %% --- Database ---
-  subgraph DB["PostgreSQL + pgvector"]
-    Sub["submission (text/audio embed)"]
-    Ptt["ptt_queue"]
-    Sched["schedule (hourly themes)"]
-  end
-
-  API --> Sub
-  Queue --> Ptt
-  Dir --> Sched
-
-
+# Cloud Buildログ
+gcloud builds log <build-id>
 ```
 
-## 🙏 謝辞
+## ライセンス
 
-- [OpenAI](https://openai.com/) - Realtime API と Embeddings API
-- [Chakra UI](https://chakra-ui.com/) - 美しいUIコンポーネント
-- [Next.js](https://nextjs.org/) - 強力なReactフレームワーク
-- [pgvector](https://github.com/pgvector/pgvector) - PostgreSQLベクトル拡張
+MIT License
