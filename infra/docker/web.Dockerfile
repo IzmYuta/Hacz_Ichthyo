@@ -12,5 +12,7 @@ EXPOSE 3000
 WORKDIR /app
 COPY --from=build /app/apps/web/.next ./.next
 COPY --from=build /app/apps/web/package.json ./package.json
+COPY --from=build /app/apps/web/next.config.ts ./next.config.ts
+COPY --from=build /app/apps/web/public ./public
 COPY --from=build /app/apps/web/node_modules ./node_modules
 CMD ["npx", "next", "start", "-p", "3000"]

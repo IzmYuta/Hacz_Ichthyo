@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { Room, RoomEvent, RemoteParticipant, RemoteTrackPublication, RemoteAudioTrack, connect } from 'livekit-client';
+import { Room, RoomEvent, RemoteTrackPublication, RemoteAudioTrack } from 'livekit-client';
 
 interface NowPlaying {
   theme: string;
@@ -52,10 +52,8 @@ export default function OnAir() {
       
       const { url, token } = await res.json();
       
-      const room = await connect(url, token, { 
-        audio: true, 
-        video: false 
-      });
+      const room = new Room();
+      await room.connect(url, token);
       
       roomRef.current = room;
       
