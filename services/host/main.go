@@ -12,16 +12,16 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
+	"github.com/livekit/media-sdk"
 	"github.com/livekit/protocol/auth"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/pion/webrtc/v3"
-	"github.com/pion/webrtc/v3/pkg/media"
+	lkmedia "github.com/livekit/server-sdk-go/v2/pkg/media"
 )
 
 type HostAgent struct {
 	openaiConn     *websocket.Conn
 	room           *lksdk.Room
-	audioTrack     *lksdk.LocalTrack
+	pcmTrack       *lkmedia.PCMLocalTrack
 	pcmWriter      *PCMWriter
 	reconnectTimer *time.Timer
 	ctx            context.Context
@@ -29,23 +29,30 @@ type HostAgent struct {
 }
 
 type PCMWriter struct {
-	buf        []byte
-	audioTrack *lksdk.LocalTrack
+	buf      []byte
+	pcmTrack *lkmedia.PCMLocalTrack
 }
 
 const frameBytes = 960 // 20ms @ 24kHz mono 16-bit
 
-func NewPCMWriter(t *lksdk.LocalTrack) *PCMWriter {
-	return &PCMWriter{audioTrack: t}
+func NewPCMWriter(t *lkmedia.PCMLocalTrack) *PCMWriter {
+	return &PCMWriter{pcmTrack: t}
 }
 
 func (w *PCMWriter) WriteB64Delta(b64 string) error {
+	log.Printf("WriteB64Delta called with base64 length: %d", len(b64))
+
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
+		log.Printf("Failed to decode base64 audio data: %v", err)
 		return err
 	}
-	w.buf = append(w.buf, raw...)
 
+	log.Printf("Decoded audio data: %d bytes", len(raw))
+	w.buf = append(w.buf, raw...)
+	log.Printf("Buffer now contains: %d bytes", len(w.buf))
+
+	framesWritten := 0
 	for len(w.buf) >= frameBytes {
 		frame := w.buf[:frameBytes]
 		w.buf = w.buf[frameBytes:]
@@ -53,15 +60,22 @@ func (w *PCMWriter) WriteB64Delta(b64 string) error {
 		// 音量を下げる（-6dB）
 		attenuateInPlace(frame, 0.5)
 
-		// PCM16データをOpusトラックに送信（適切なフォーマットで）
-		sample := media.Sample{
-			Data:     frame,
-			Duration: 20 * time.Millisecond,
+		// PCM16データをPCMLocalTrackに送信
+		// frameは[]byteなので、[]int16に変換
+		pcm16Data := make(media.PCM16Sample, len(frame)/2)
+		for i := 0; i < len(frame); i += 2 {
+			pcm16Data[i/2] = int16(int(frame[i]) | int(frame[i+1])<<8)
 		}
-		if err := w.audioTrack.WriteSample(sample, nil); err != nil {
+
+		log.Printf("Writing PCM16 sample %d: %d samples to PCMLocalTrack", framesWritten+1, len(pcm16Data))
+		if err := w.pcmTrack.WriteSample(pcm16Data); err != nil {
+			log.Printf("Failed to write PCM16 sample: %v", err)
 			return err
 		}
+		log.Printf("Successfully wrote PCM16 sample %d", framesWritten+1)
+		framesWritten++
 	}
+	log.Printf("WriteB64Delta completed: wrote %d frames, %d bytes remaining in buffer", framesWritten, len(w.buf))
 	return nil
 }
 
@@ -164,21 +178,19 @@ func (h *HostAgent) connectToLiveKit() error {
 		return fmt.Errorf("failed to connect to LiveKit room: %w", err)
 	}
 
-	// オーディオトラックを作成（Opus）
-	log.Println("Creating audio track...")
-	h.audioTrack, err = lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
-		MimeType: webrtc.MimeTypeOpus,
-	})
+	// PCMオーディオトラックを作成（24kHz, mono）
+	log.Println("Creating PCM audio track...")
+	h.pcmTrack, err = lkmedia.NewPCMLocalTrack(24000, 1, nil) // 24kHz, mono
 	if err != nil {
-		return fmt.Errorf("failed to create audio track: %w", err)
+		return fmt.Errorf("failed to create PCM audio track: %w", err)
 	}
 
 	// PCMWriterを初期化
-	h.pcmWriter = NewPCMWriter(h.audioTrack)
+	h.pcmWriter = NewPCMWriter(h.pcmTrack)
 
 	// トラックをルームに公開
-	log.Println("Publishing audio track to room...")
-	_, err = h.room.LocalParticipant.PublishTrack(h.audioTrack, &lksdk.TrackPublicationOptions{
+	log.Println("Publishing PCM audio track to room...")
+	_, err = h.room.LocalParticipant.PublishTrack(h.pcmTrack, &lksdk.TrackPublicationOptions{
 		Name: "radio-24-host",
 	})
 	if err != nil {
@@ -186,6 +198,11 @@ func (h *HostAgent) connectToLiveKit() error {
 	}
 
 	log.Println("Successfully connected to LiveKit room and published audio track")
+
+	// 接続確認のためのログ
+	log.Printf("LiveKit room state: connected=%v", h.room != nil)
+	log.Printf("PCM track state: track=%v, writer=%v", h.pcmTrack != nil, h.pcmWriter != nil)
+
 	return nil
 }
 
@@ -366,27 +383,34 @@ func (h *HostAgent) publishAudioToLiveKit(audioData string) {
 		return
 	}
 
+	log.Printf("publishAudioToLiveKit called with data length: %d", len(audioData))
+
 	// テスト用の音声データかチェック
 	if strings.HasPrefix(audioData, "test_audio_") {
 		log.Printf("Test mode: Publishing test audio data: %s", audioData)
 		// テスト用の音声データを生成（実際の音声ではなく、テスト用のデータ）
 		testAudioBytes := generateTestAudioBytes(audioData)
+		log.Printf("Generated test audio bytes: %d bytes", len(testAudioBytes))
 
 		// テストデータをBase64エンコードしてPCMWriterに送信
 		testAudioB64 := base64.StdEncoding.EncodeToString(testAudioBytes)
+		log.Printf("Test audio base64 length: %d", len(testAudioB64))
 		if err := h.pcmWriter.WriteB64Delta(testAudioB64); err != nil {
 			log.Printf("Failed to write test audio sample: %v", err)
+		} else {
+			log.Printf("Successfully published test audio")
 		}
 		return
 	}
 
 	// PCMWriterを使用してBase64デルタデータを処理
+	log.Printf("Processing real audio data via PCMWriter, calling WriteB64Delta...")
 	if err := h.pcmWriter.WriteB64Delta(audioData); err != nil {
 		log.Printf("Failed to write audio delta: %v", err)
 		return
 	}
 
-	log.Printf("Audio data published via PCMWriter")
+	log.Printf("Audio data published via PCMWriter successfully")
 }
 
 func (h *HostAgent) reconnectLiveKit() {
