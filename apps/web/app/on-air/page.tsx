@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { Room, RoomEvent, RemoteParticipant, RemoteTrackPublication, RemoteAudioTrack, connect } from 'livekit-client';
+import { Room, RoomEvent, RemoteTrackPublication, RemoteAudioTrack } from 'livekit-client';
 
 interface NowPlaying {
   theme: string;
@@ -52,17 +52,24 @@ export default function OnAir() {
       
       const { url, token } = await res.json();
       
-      const room = await connect(url, token, { 
-        audio: true, 
-        video: false 
-      });
+      const room = new Room();
+      await room.connect(url, token);
       
       roomRef.current = room;
       
+      // 参加者情報をログに出力
+      console.log('Connected to room:', room.name);
+      console.log('Participants:', room.numParticipants);
+      room.remoteParticipants.forEach((participant) => {
+        console.log('Participant:', participant.identity, 'tracks:', participant.audioTrackPublications.size);
+      });
+      
       room.on(RoomEvent.TrackSubscribed, (_track, publication, _participant) => {
         const track = (publication as RemoteTrackPublication).track as RemoteAudioTrack;
+        console.log('Track subscribed:', track?.kind, publication.source);
         if (track) {
           track.attach(); // 自動再生
+          console.log('Audio track attached');
         }
       });
       

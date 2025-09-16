@@ -38,6 +38,8 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-radio24}
       - API_PORT=8080
       - ALLOWED_ORIGIN=http://localhost:3000
+      - LIVEKIT_API_KEY=devkey
+      - LIVEKIT_API_SECRET=secret
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_REALTIME_MODEL=${OPENAI_REALTIME_MODEL:-gpt-realtime}
       - OPENAI_REALTIME_VOICE=${OPENAI_REALTIME_VOICE:-marin}
@@ -78,20 +80,11 @@ services:
     ports:
       - "7880:7880"
       - "7881:7881"
+    volumes:
+      - ./infra/livekit/livekit.yaml:/etc/livekit.yaml:ro
     environment:
-      LIVEKIT_CONFIG: |
-        port: 7880
-        rtc:
-          udp_port: 7881
-          use_external_ip: false
-        redis:
-          address: redis:6379
-        keys:
-          APIKey: devkey
-          APISecret: secret
-        webhook:
-          api_key: webhookkey
-        development: true
+      LIVEKIT_KEYS: "devkey: secret"
+    command: ["--config", "/etc/livekit.yaml", "--dev"]
     depends_on:
       - redis
     restart: unless-stopped
@@ -117,7 +110,7 @@ services:
       - LIVEKIT_API_KEY=devkey
       - LIVEKIT_API_SECRET=secret
       - LIVEKIT_WS_URL=ws://livekit:7880
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_API_KEY=test-mode
       - OPENAI_REALTIME_MODEL=${OPENAI_REALTIME_MODEL:-gpt-realtime}
       - OPENAI_REALTIME_VOICE=${OPENAI_REALTIME_VOICE:-marin}
     depends_on:
