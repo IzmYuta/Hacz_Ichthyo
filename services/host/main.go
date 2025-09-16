@@ -13,7 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
 	"github.com/livekit/protocol/auth"
-	lksdk "github.com/livekit/server-sdk-go"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
 )
@@ -22,10 +22,64 @@ type HostAgent struct {
 	openaiConn     *websocket.Conn
 	room           *lksdk.Room
 	audioTrack     *lksdk.LocalTrack
+	pcmWriter      *PCMWriter
 	reconnectTimer *time.Timer
 	ctx            context.Context
 	cancel         context.CancelFunc
-	audioBuffer    []byte
+}
+
+type PCMWriter struct {
+	buf        []byte
+	audioTrack *lksdk.LocalTrack
+}
+
+const frameBytes = 960 // 20ms @ 24kHz mono 16-bit
+
+func NewPCMWriter(t *lksdk.LocalTrack) *PCMWriter {
+	return &PCMWriter{audioTrack: t}
+}
+
+func (w *PCMWriter) WriteB64Delta(b64 string) error {
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return err
+	}
+	w.buf = append(w.buf, raw...)
+
+	for len(w.buf) >= frameBytes {
+		frame := w.buf[:frameBytes]
+		w.buf = w.buf[frameBytes:]
+
+		// 音量を下げる（-6dB）
+		attenuateInPlace(frame, 0.5)
+
+		// PCM16データをOpusトラックに送信（適切なフォーマットで）
+		sample := media.Sample{
+			Data:     frame,
+			Duration: 20 * time.Millisecond,
+		}
+		if err := w.audioTrack.WriteSample(sample, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func attenuateInPlace(b []byte, gain float64) {
+	// b は little-endian の int16 PCM
+	for i := 0; i+1 < len(b); i += 2 {
+		sample := int16(int(b[i]) | int(b[i+1])<<8)
+		v := float64(sample) * gain
+		if v > 32767 {
+			v = 32767
+		}
+		if v < -32768 {
+			v = -32768
+		}
+		s := int16(v)
+		b[i] = byte(s)
+		b[i+1] = byte(uint16(s) >> 8)
+	}
 }
 
 type DirectorMessage struct {
@@ -118,6 +172,9 @@ func (h *HostAgent) connectToLiveKit() error {
 	if err != nil {
 		return fmt.Errorf("failed to create audio track: %w", err)
 	}
+
+	// PCMWriterを初期化
+	h.pcmWriter = NewPCMWriter(h.audioTrack)
 
 	// トラックをルームに公開
 	log.Println("Publishing audio track to room...")
@@ -304,8 +361,8 @@ func (h *HostAgent) sendMessage(content string) {
 }
 
 func (h *HostAgent) publishAudioToLiveKit(audioData string) {
-	if h.audioTrack == nil {
-		log.Println("Audio track not initialized, skipping audio publish")
+	if h.pcmWriter == nil {
+		log.Println("PCM writer not initialized, skipping audio publish")
 		return
 	}
 
@@ -314,46 +371,22 @@ func (h *HostAgent) publishAudioToLiveKit(audioData string) {
 		log.Printf("Test mode: Publishing test audio data: %s", audioData)
 		// テスト用の音声データを生成（実際の音声ではなく、テスト用のデータ）
 		testAudioBytes := generateTestAudioBytes(audioData)
-		sample := media.Sample{
-			Data:     testAudioBytes,
-			Duration: 10 * time.Millisecond, // 10msのサンプル
-		}
 
-		if err := h.audioTrack.WriteSample(sample, nil); err != nil {
+		// テストデータをBase64エンコードしてPCMWriterに送信
+		testAudioB64 := base64.StdEncoding.EncodeToString(testAudioBytes)
+		if err := h.pcmWriter.WriteB64Delta(testAudioB64); err != nil {
 			log.Printf("Failed to write test audio sample: %v", err)
 		}
 		return
 	}
 
-	// 通常のBase64デコード
-	audioBytes, err := base64.StdEncoding.DecodeString(audioData)
-	if err != nil {
-		log.Printf("Failed to decode audio data: %v", err)
+	// PCMWriterを使用してBase64デルタデータを処理
+	if err := h.pcmWriter.WriteB64Delta(audioData); err != nil {
+		log.Printf("Failed to write audio delta: %v", err)
 		return
 	}
 
-	// 音声データをバッファに追加
-	h.audioBuffer = append(h.audioBuffer, audioBytes...)
-
-	// PCM16音声データを適切に処理（24kHz, 16bit = 2 bytes/sample）
-	// 20msのチャンクに分割（24kHz * 20ms * 2 bytes = 960 bytes）
-	chunkSize := 960 // 20ms分のデータ
-	for len(h.audioBuffer) >= chunkSize {
-		chunk := h.audioBuffer[:chunkSize]
-		h.audioBuffer = h.audioBuffer[chunkSize:]
-
-		// オーディオトラックに送信
-		sample := media.Sample{
-			Data:     chunk,
-			Duration: 20 * time.Millisecond, // 20ms固定
-		}
-		if err := h.audioTrack.WriteSample(sample, nil); err != nil {
-			log.Printf("Failed to write audio sample: %v", err)
-			return
-		}
-	}
-
-	log.Printf("Audio data published: %d bytes in chunks", len(audioBytes))
+	log.Printf("Audio data published via PCMWriter")
 }
 
 func (h *HostAgent) reconnectLiveKit() {
@@ -435,9 +468,9 @@ func generateTestAudioData(text string) string {
 func generateTestAudioBytes(audioData string) []byte {
 	// テスト用の音声バイトデータを生成（実際の音声ではなく、テスト用のデータ）
 	// 実際の実装では、ここでテキストを音声に変換する
-	// 10ms分のPCM16データを生成（48kHz, 16bit）- サイズを小さくする
-	sampleRate := 48000
-	duration := 10 // milliseconds
+	// 20ms分のPCM16データを生成（24kHz, 16bit）- 960バイト
+	sampleRate := 24000
+	duration := 20 // milliseconds
 	samples := sampleRate * duration / 1000
 	audioBytes := make([]byte, samples*2) // 16bit = 2bytes per sample
 
