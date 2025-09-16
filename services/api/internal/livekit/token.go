@@ -49,7 +49,7 @@ func (tg *TokenGenerator) GenerateJoinToken(identity string) (*JoinTokenResponse
 	}
 
 	return &JoinTokenResponse{
-		URL:   "wss://localhost:7880", // ローカル開発用
+		URL:   "ws://localhost:7880", // ローカル開発用
 		Token: token,
 		Room:  "radio-24",
 	}, nil
