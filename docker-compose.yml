@@ -78,20 +78,9 @@ services:
     ports:
       - "7880:7880"
       - "7881:7881"
-    environment:
-      LIVEKIT_CONFIG: |
-        port: 7880
-        rtc:
-          udp_port: 7881
-          use_external_ip: false
-        redis:
-          address: redis:6379
-        keys:
-          APIKey: devkey
-          APISecret: secret
-        webhook:
-          api_key: webhookkey
-        development: true
+    volumes:
+      - ./infra/livekit/livekit.yaml:/etc/livekit.yaml:ro
+    command: ["--config", "/etc/livekit.yaml"]
     depends_on:
       - redis
     restart: unless-stopped
