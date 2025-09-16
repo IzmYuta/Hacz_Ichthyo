@@ -284,8 +284,13 @@ resource "google_cloud_run_v2_service" "host" {
         }
       }
       env {
-        name  = "LIVEKIT_WS_URL"
-        value = "wss://${google_cloud_run_v2_service.livekit.uri}"
+        name = "LIVEKIT_WS_URL"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.livekit_url.secret_id
+            version = "latest"
+          }
+        }
       }
     }
 
@@ -431,4 +436,20 @@ resource "google_secret_manager_secret" "livekit_api_secret" {
 resource "google_secret_manager_secret_version" "livekit_api_secret" {
   secret      = google_secret_manager_secret.livekit_api_secret.id
   secret_data = var.livekit_api_secret
+}
+
+# LiveKit URL secret
+resource "google_secret_manager_secret" "livekit_url" {
+  secret_id = "livekit-url"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret_version" "livekit_url" {
+  secret      = google_secret_manager_secret.livekit_url.id
+  secret_data = var.livekit_url
 }

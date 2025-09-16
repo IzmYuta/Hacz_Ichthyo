@@ -33,3 +33,9 @@ variable "livekit_api_secret" {
   type        = string
   sensitive   = true
 }
+
+variable "livekit_url" {
+  description = "LiveKit WebSocket URL"
+  type        = string
+  sensitive   = true
+}
