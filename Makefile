@@ -15,6 +15,7 @@ DB_PORT := 5432
 
 # ディレクトリ設定
 API_DIR := services/api
+HOST_DIR := services/host
 WEB_DIR := apps/web
 DB_DIR := db
 
@@ -42,7 +43,7 @@ help: ## このヘルプを表示
 # =============================================================================
 
 .PHONY: setup
-setup: setup-env setup-db setup-api setup-web ## 完全な環境構築を実行
+setup: setup-env setup-db setup-api setup-host setup-web ## 完全な環境構築を実行
 	@echo ""
 	@echo "✅ 環境構築が完了しました！"
 	@echo ""
@@ -95,6 +96,12 @@ setup-api: ## APIサーバーの依存関係をインストール
 	cd $(API_DIR) && $(GO) mod tidy
 	@echo "✅ APIサーバーの依存関係をインストールしました"
 
+.PHONY: setup-host
+setup-host: ## Hostサービスの依存関係をインストール
+	@echo "🎙️  Hostサービスの依存関係をインストール中..."
+	cd $(HOST_DIR) && $(GO) mod tidy
+	@echo "✅ Hostサービスの依存関係をインストールしました"
+
 .PHONY: setup-web
 setup-web: ## Webアプリの依存関係をインストール
 	@echo "🌐 Webアプリの依存関係をインストール中..."
@@ -107,6 +114,9 @@ setup-web: ## Webアプリの依存関係をインストール
 
 .PHONY: dev
 dev: dev-db dev-api dev-web ## 開発環境を起動（データベース + API + Web）
+
+.PHONY: dev-all
+dev-all: dev-db dev-api dev-host dev-web ## 全サービスを起動（データベース + API + Host + Web）
 
 .PHONY: dev-db
 dev-db: ## データベースのみ起動
@@ -134,6 +144,18 @@ dev-api-bg: ## APIサーバーをバックグラウンドで起動
 	cd $(API_DIR) && $(GO) run main.go &
 	@echo "✅ APIサーバーがバックグラウンドで起動しました (PID: $$!)"
 
+.PHONY: dev-host
+dev-host: ## Hostサービスを起動
+	@echo "🎙️  Hostサービスを起動中..."
+	@echo "  停止するには Ctrl+C を押してください"
+	cd $(HOST_DIR) && $(GO) run main.go
+
+.PHONY: dev-host-bg
+dev-host-bg: ## Hostサービスをバックグラウンドで起動
+	@echo "🎙️  Hostサービスをバックグラウンドで起動中..."
+	cd $(HOST_DIR) && $(GO) run main.go &
+	@echo "✅ Hostサービスがバックグラウンドで起動しました (PID: $$!)"
+
 .PHONY: dev-web-bg
 dev-web-bg: ## Webアプリをバックグラウンドで起動
 	@echo "🌐 Webアプリをバックグラウンドで起動中..."
@@ -145,13 +167,19 @@ dev-web-bg: ## Webアプリをバックグラウンドで起動
 # =============================================================================
 
 .PHONY: build
-build: build-api build-web ## 本番用ビルドを実行
+build: build-api build-host build-web ## 本番用ビルドを実行
 
 .PHONY: build-api
 build-api: ## APIサーバーをビルド
 	@echo "🔧 APIサーバーをビルド中..."
 	cd $(API_DIR) && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -o server main.go
 	@echo "✅ APIサーバーのビルドが完了しました"
+
+.PHONY: build-host
+build-host: ## Hostサービスをビルド
+	@echo "🎙️  Hostサービスをビルド中..."
+	cd $(HOST_DIR) && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -o host main.go
+	@echo "✅ Hostサービスのビルドが完了しました"
 
 .PHONY: build-web
 build-web: ## Webアプリをビルド
@@ -214,13 +242,19 @@ docker-clean: ## Docker Composeのデータとボリュームを削除
 # =============================================================================
 
 .PHONY: test
-test: test-api test-web ## 全テストを実行
+test: test-api test-host test-web ## 全テストを実行
 
 .PHONY: test-api
 test-api: ## APIサーバーのテストを実行
 	@echo "🧪 APIサーバーのテストを実行中..."
 	cd $(API_DIR) && $(GO) test ./...
 	@echo "✅ APIサーバーのテストが完了しました"
+
+.PHONY: test-host
+test-host: ## Hostサービスのテストを実行
+	@echo "🧪 Hostサービスのテストを実行中..."
+	cd $(HOST_DIR) && $(GO) test ./...
+	@echo "✅ Hostサービスのテストが完了しました"
 
 .PHONY: test-web
 test-web: ## Webアプリのテストを実行
@@ -271,6 +305,7 @@ clean: clean-build clean-deps clean-docker ## 全クリーンアップを実行
 clean-build: ## ビルド成果物を削除
 	@echo "🧹 ビルド成果物を削除中..."
 	rm -rf $(API_DIR)/server
+	rm -rf $(HOST_DIR)/host
 	rm -rf $(WEB_DIR)/.next
 	rm -rf $(WEB_DIR)/out
 	rm -rf $(WEB_DIR)/build
@@ -304,6 +339,9 @@ status: ## サービス状態を確認
 	@echo "🔧 APIサーバー (ポート $(API_PORT)):"
 	@lsof -i :$(API_PORT) 2>/dev/null | grep LISTEN || echo "  停止中"
 	@echo ""
+	@echo "🎙️  Hostサービス:"
+	@ps aux | grep "go run main.go" | grep -v grep || echo "  停止中"
+	@echo ""
 	@echo "🌐 Webアプリ (ポート $(WEB_PORT)):"
 	@lsof -i :$(WEB_PORT) 2>/dev/null | grep LISTEN || echo "  停止中"
 
@@ -335,6 +373,7 @@ logs-db: ## データベースのログを表示
 format: ## コードフォーマットを実行
 	@echo "🎨 コードフォーマットを実行中..."
 	cd $(API_DIR) && $(GO) fmt ./...
+	cd $(HOST_DIR) && $(GO) fmt ./...
 	cd $(WEB_DIR) && $(PNPM) format
 	@echo "✅ コードフォーマットが完了しました"
 
@@ -342,6 +381,7 @@ format: ## コードフォーマットを実行
 lint: ## リンターを実行
 	@echo "🔍 リンターを実行中..."
 	cd $(API_DIR) && $(GO) vet ./...
+	cd $(HOST_DIR) && $(GO) vet ./...
 	cd $(WEB_DIR) && $(PNPM) lint
 	@echo "✅ リンターが完了しました"
 

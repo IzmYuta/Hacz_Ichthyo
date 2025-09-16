@@ -237,3 +237,8 @@ coverage/
 # Misc
 *.tgz
 *.tar.gz
+
+
+# binary
+services/host/host
+services/api/server

@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: ankane/pgvector:latest
@@ -72,5 +70,56 @@ services:
       retries: 3
       start_period: 40s
 
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: radio24-livekit
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          udp_port: 7881
+          use_external_ip: false
+        redis:
+          address: redis:6379
+        keys:
+          APIKey: devkey
+          APISecret: secret
+        webhook:
+          api_key: webhookkey
+        development: true
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: radio24-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  host:
+    build:
+      context: .
+      dockerfile: infra/docker/host.Dockerfile
+    container_name: radio24-host
+    environment:
+      - LIVEKIT_API_KEY=devkey
+      - LIVEKIT_API_SECRET=secret
+      - LIVEKIT_WS_URL=ws://livekit:7880
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_REALTIME_MODEL=${OPENAI_REALTIME_MODEL:-gpt-realtime}
+      - OPENAI_REALTIME_VOICE=${OPENAI_REALTIME_VOICE:-marin}
+    depends_on:
+      - livekit
+    restart: unless-stopped
+
 volumes:
   postgres_data:
+  redis_data:
