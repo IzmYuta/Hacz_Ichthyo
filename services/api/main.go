@@ -13,8 +13,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/gorilla/websocket"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
+	"github.com/radio24/api/internal/livekit"
+	"github.com/radio24/api/pkg/director"
+	"github.com/radio24/api/pkg/queue"
 )
 
 type EphemeralResp struct {
@@ -35,12 +39,23 @@ type Theme struct {
 }
 
 var db *sql.DB
+var tokenGenerator *livekit.TokenGenerator
+var programDirector *director.Director
+var pttQueue *queue.Queue
 
 func main() {
-	// 環境変数読み込み
-	err := godotenv.Load()
+	// 環境変数読み込み（リポジトリルートの.envファイル）
+	err := godotenv.Load("../../.env")
 	if err != nil {
-		log.Println("No .env file found")
+		// Docker環境では/app/.envを試す
+		err = godotenv.Load("/app/.env")
+		if err != nil {
+			log.Println("No .env file found - using environment variables")
+		} else {
+			log.Println("Loaded .env file from /app/.env")
+		}
+	} else {
+		log.Println("Loaded .env file from repository root")
 	}
 
 	// DB接続
@@ -68,6 +83,19 @@ func main() {
 	// テーブル作成
 	createTables()
 
+	// LiveKit Token Generator初期化
+	livekitAPIKey := getEnv("LIVEKIT_API_KEY", "devkey")
+	livekitAPISecret := getEnv("LIVEKIT_API_SECRET", "secret")
+	tokenGenerator = livekit.NewTokenGenerator(livekitAPIKey, livekitAPISecret)
+
+	// Program Director初期化
+	hostChannel := make(chan string, 100)
+	programDirector = director.NewDirector(hostChannel)
+	programDirector.Start()
+
+	// PTT Queue初期化
+	pttQueue = queue.NewQueue()
+
 	// ルーター設定
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -76,7 +104,11 @@ func main() {
 
 	// ルート
 	r.Get("/health", handleHealth)
+	r.Get("/v1/now", handleNow)
+	r.Post("/v1/admin/advance", handleAdvance)
+	r.Get("/ws/ptt", handlePTTWebSocket)
 	r.Post("/v1/realtime/ephemeral", handleEphemeral)
+	r.Post("/v1/room/join", handleRoomJoin)
 	r.Post("/v1/submission", handleSubmission)
 	r.Post("/v1/theme/rotate", handleThemeRotate)
 
@@ -98,6 +130,95 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":    "healthy",
 		"timestamp": time.Now().Format(time.RFC3339),
 	})
+}
+
+func handleRoomJoin(w http.ResponseWriter, r *http.Request) {
+	var req livekit.JoinTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", 400)
+		return
+	}
+
+	if req.Identity == "" {
+		http.Error(w, "Identity is required", 400)
+		return
+	}
+
+	resp, err := tokenGenerator.GenerateJoinToken(req.Identity)
+	if err != nil {
+		log.Printf("Failed to generate join token: %v", err)
+		http.Error(w, "Failed to generate token", 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func handleNow(w http.ResponseWriter, r *http.Request) {
+	nowPlaying := programDirector.GetNowPlaying()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(nowPlaying)
+}
+
+func handleAdvance(w http.ResponseWriter, r *http.Request) {
+	programDirector.AdvanceSegment()
+	nowPlaying := programDirector.GetNowPlaying()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(nowPlaying)
+}
+
+type PTTMessage struct {
+	Type string `json:"type"`
+	Kind string `json:"kind"`
+	Text string `json:"text,omitempty"`
+}
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true // 本番では適切なオリジンチェックを実装
+	},
+}
+
+func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	log.Println("PTT WebSocket connected")
+
+	for {
+		var msg PTTMessage
+		err := conn.ReadJSON(&msg)
+		if err != nil {
+			log.Printf("WebSocket read error: %v", err)
+			break
+		}
+
+		if msg.Type == "ptt" {
+			// PTTアイテムをキューに追加
+			item := queue.PTTItem{
+				ID:       fmt.Sprintf("ptt_%d", time.Now().UnixNano()),
+				UserID:   "anonymous", // 実際の実装では認証から取得
+				Kind:     queue.PTTKind(msg.Kind),
+				Text:     msg.Text,
+				Priority: 0, // デフォルト優先度
+			}
+
+			pttQueue.Enqueue(item)
+			log.Printf("PTT enqueued: %s", msg.Text)
+
+			// クライアントに確認応答
+			response := map[string]interface{}{
+				"type": "ptt_queued",
+				"id":   item.ID,
+			}
+			conn.WriteJSON(response)
+		}
+	}
 }
 
 func corsMiddleware() func(http.Handler) http.Handler {

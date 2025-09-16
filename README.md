@@ -244,17 +244,59 @@ make deploy-staging
 make deploy-prod
 ```
 
-## 🤝 コントリビューション
+## アーキテクチャ
+```mermaid
+flowchart LR
+  %% --- Clients ---
+  subgraph Client["Listener (Web: Next.js 15 + React 19)"]
+    UI["/on-air UI\n(LiveKit SDK)"] -->|Join| SFU
+    UI -->|PTT投稿| API
+  end
 
-1. このリポジトリをフォーク
-2. フィーチャーブランチを作成 (`git checkout -b feature/amazing-feature`)
-3. 変更をコミット (`git commit -m 'Add amazing feature'`)
-4. ブランチにプッシュ (`git push origin feature/amazing-feature`)
-5. プルリクエストを作成
+  %% --- LiveKit ---
+  subgraph SFU["LiveKit (SFU / Room: radio-24)"]
+    HostPub["Host Agent\n(Publish音声)"] --> SFU
+    SFU --> UI
+  end
 
-## 📄 ライセンス
+  %% --- Server Layer ---
+  subgraph Server["Backend (Go / Cloud Run)"]
+    API["API\n(Go)\n- /v1/room/join\n- /v1/submission\n- /ws/ptt\n- /v1/now"] 
+    Queue["PTT Queue"]
+    Dir["Program Director\n(時報/進行)"]
+    Mix["Mixer\n(ダッキング)"]
 
-このプロジェクトは MIT ライセンスの下で公開されています。
+    API --> Queue
+    API --> DB
+    Dir --> Host
+    Dir --> API
+    Queue --> Dir
+    Dir --> Mix
+    Mix --> SFU
+  end
+
+  %% --- Host Agent ---
+  subgraph Host["Host Agent (常時発話AI)\n(Go/Node + OpenAI Realtime)"]
+    RT["OpenAI Realtime API\n(gpt-realtime, Marin/Cedar)"]
+    HostProc["Hostプロセス\n(session.update/response.create)"]
+    HostProc <--> RT
+    HostProc --> SFU
+    Dir --> HostProc
+  end
+
+  %% --- Database ---
+  subgraph DB["PostgreSQL + pgvector"]
+    Sub["submission (text/audio embed)"]
+    Ptt["ptt_queue"]
+    Sched["schedule (hourly themes)"]
+  end
+
+  API --> Sub
+  Queue --> Ptt
+  Dir --> Sched
+
+
+```
 
 ## 🙏 謝辞
 
