@@ -80,7 +80,9 @@ services:
       - "7881:7881"
     volumes:
       - ./infra/livekit/livekit.yaml:/etc/livekit.yaml:ro
-    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "devkey: secret"
+    command: ["--config", "/etc/livekit.yaml", "--dev"]
     depends_on:
       - redis
     restart: unless-stopped
@@ -103,9 +105,9 @@ services:
     volumes:
       - ./.env:/app/.env:ro
     environment:
-      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
-      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
-      - LIVEKIT_WS_URL=${LIVEKIT_WS_URL:-ws://livekit:7880}
+      - LIVEKIT_API_KEY=devkey
+      - LIVEKIT_API_SECRET=secret
+      - LIVEKIT_WS_URL=ws://livekit:7880
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_REALTIME_MODEL=${OPENAI_REALTIME_MODEL:-gpt-realtime}
       - OPENAI_REALTIME_VOICE=${OPENAI_REALTIME_VOICE:-marin}

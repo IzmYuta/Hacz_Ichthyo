@@ -11,15 +11,15 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
 	"github.com/livekit/protocol/auth"
+	lksdk "github.com/livekit/server-sdk-go"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
 )
 
 type HostAgent struct {
 	openaiConn     *websocket.Conn
-	livekitConn    *websocket.Conn
-	peerConnection *webrtc.PeerConnection
-	audioTrack     *webrtc.TrackLocalStaticSample
+	room           *lksdk.Room
+	audioTrack     *lksdk.LocalTrack
 	reconnectTimer *time.Timer
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -80,43 +80,6 @@ func (h *HostAgent) connectToLiveKit() error {
 		getEnv("LIVEKIT_API_KEY", "not set"),
 		getEnv("LIVEKIT_API_SECRET", "not set"))
 
-	// WebRTC PeerConnection設定
-	config := webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{
-				URLs: []string{"stun:stun.l.google.com:19302"},
-			},
-		},
-	}
-
-	log.Println("Creating WebRTC PeerConnection...")
-	var err error
-	h.peerConnection, err = webrtc.NewPeerConnection(config)
-	if err != nil {
-		return fmt.Errorf("failed to create peer connection: %w", err)
-	}
-	log.Println("WebRTC PeerConnection created successfully")
-
-	// オーディオトラック作成
-	log.Println("Creating audio track...")
-	h.audioTrack, err = webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus},
-		"host-audio",
-		"radio-24-host",
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create audio track: %w", err)
-	}
-	log.Println("Audio track created successfully")
-
-	// トラックをPeerConnectionに追加
-	log.Println("Adding track to PeerConnection...")
-	_, err = h.peerConnection.AddTrack(h.audioTrack)
-	if err != nil {
-		return fmt.Errorf("failed to add track: %w", err)
-	}
-	log.Println("Track added to PeerConnection successfully")
-
 	// LiveKit認証トークン生成
 	apiKey := getEnv("LIVEKIT_API_KEY", "devkey")
 	apiSecret := getEnv("LIVEKIT_API_SECRET", "secret")
@@ -137,19 +100,32 @@ func (h *HostAgent) connectToLiveKit() error {
 
 	log.Printf("Generated LiveKit token: %s", token)
 
-	// LiveKit WebSocket接続（認証ヘッダー付き）
-	headers := map[string][]string{
-		"Authorization": {fmt.Sprintf("Bearer %s", token)},
-	}
-	log.Printf("Connecting to LiveKit WebSocket: %s/rtc", wsURL)
-	h.livekitConn, _, err = websocket.DefaultDialer.Dial(wsURL+"/rtc", headers)
+	// LiveKit SDKを使ってルームに接続
+	log.Println("Connecting to LiveKit room using SDK...")
+	h.room, err = lksdk.ConnectToRoomWithToken(wsURL, token, &lksdk.RoomCallback{})
 	if err != nil {
-		log.Printf("Failed to connect to LiveKit: %v", err)
-		// LiveKit接続に失敗しても続行
-		return fmt.Errorf("failed to connect to LiveKit WebSocket: %w", err)
+		return fmt.Errorf("failed to connect to LiveKit room: %w", err)
 	}
 
-	log.Println("Connected to LiveKit room successfully")
+	// オーディオトラックを作成（Opus）
+	log.Println("Creating audio track...")
+	h.audioTrack, err = lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
+		MimeType: webrtc.MimeTypeOpus,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create audio track: %w", err)
+	}
+
+	// トラックをルームに公開
+	log.Println("Publishing audio track to room...")
+	_, err = h.room.LocalParticipant.PublishTrack(h.audioTrack, &lksdk.TrackPublicationOptions{
+		Name: "radio-24-host",
+	})
+	if err != nil {
+		return fmt.Errorf("failed to publish track: %w", err)
+	}
+
+	log.Println("Successfully connected to LiveKit room and published audio track")
 	return nil
 }
 
@@ -202,8 +178,7 @@ func (h *HostAgent) run() {
 	// 音声データ受信ループ
 	go h.handleOpenAIMessages()
 
-	// LiveKitメッセージハンドリング
-	go h.handleLiveKitMessages()
+	// LiveKitメッセージハンドリングは不要（SDKが自動処理）
 
 	// 定期発話ループ（30秒ごと）
 	ticker := time.NewTicker(30 * time.Second)
@@ -280,67 +255,17 @@ func (h *HostAgent) publishAudioToLiveKit(audioData string) {
 		return
 	}
 
-	// オーディオトラックに送信
-	if err := h.audioTrack.WriteSample(media.Sample{
+	// オーディオトラックに送信（PCM16をOpusとして扱う）
+	sample := media.Sample{
 		Data:     audioBytes,
-		Duration: time.Millisecond * 20, // 20msのサンプル
-	}); err != nil {
+		Duration: 20 * time.Millisecond, // 20msのサンプル
+	}
+	if err := h.audioTrack.WriteSample(sample, nil); err != nil {
 		log.Printf("Failed to write audio sample: %v", err)
 		return
 	}
 
 	log.Printf("Audio data published: %d bytes", len(audioBytes))
-}
-
-func (h *HostAgent) handleLiveKitMessages() {
-	for {
-		select {
-		case <-h.ctx.Done():
-			return
-		default:
-			if h.livekitConn == nil {
-				time.Sleep(time.Second)
-				continue
-			}
-
-			var msg map[string]interface{}
-			if err := h.livekitConn.ReadJSON(&msg); err != nil {
-				log.Printf("LiveKit connection error: %v", err)
-				h.reconnectLiveKit()
-				return
-			}
-
-			// LiveKitメッセージの処理
-			if msgType, ok := msg["type"].(string); ok {
-				switch msgType {
-				case "offer":
-					// WebRTC Offer処理
-					h.handleWebRTCOffer(msg)
-				case "answer":
-					// WebRTC Answer処理
-					h.handleWebRTCAnswer(msg)
-				case "ice-candidate":
-					// ICE Candidate処理
-					h.handleICECandidate(msg)
-				}
-			}
-		}
-	}
-}
-
-func (h *HostAgent) handleWebRTCOffer(msg map[string]interface{}) {
-	// WebRTC Offerの処理（簡略化）
-	log.Println("Received WebRTC offer from LiveKit")
-}
-
-func (h *HostAgent) handleWebRTCAnswer(msg map[string]interface{}) {
-	// WebRTC Answerの処理（簡略化）
-	log.Println("Received WebRTC answer from LiveKit")
-}
-
-func (h *HostAgent) handleICECandidate(msg map[string]interface{}) {
-	// ICE Candidateの処理（簡略化）
-	log.Println("Received ICE candidate from LiveKit")
 }
 
 func (h *HostAgent) reconnectLiveKit() {
