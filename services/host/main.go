@@ -1,15 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
-	"math"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -144,11 +144,11 @@ func main() {
 		log.Println("Successfully connected to LiveKit")
 	}
 
-	// OpenAI Realtime接続
-	if err := agent.connectToOpenAI(); err != nil {
-		log.Printf("Failed to connect to OpenAI: %v", err)
-		// OpenAI接続に失敗しても続行（テストモードで動作）
-	}
+	// OpenAI Realtime接続（将来のPTT実装用にコメントアウト）
+	// if err := agent.connectToOpenAI(); err != nil {
+	// 	log.Printf("Failed to connect to OpenAI: %v", err)
+	// 	// OpenAI接続に失敗しても続行（テストモードで動作）
+	// }
 
 	// メインループ
 	agent.run()
@@ -216,70 +216,44 @@ func (h *HostAgent) connectToLiveKit() error {
 	return nil
 }
 
-func (h *HostAgent) connectToOpenAI() error {
-	apiKey := getEnv("OPENAI_API_KEY", "")
-	if apiKey != "" {
-		log.Printf("OpenAI API key: %s", apiKey[:10]+"...") // 最初の10文字だけ表示
-	}
+// connectToOpenAI OpenAI Realtime API接続（将来のPTT実装用にコメントアウト）
+// func (h *HostAgent) connectToOpenAI() error {
+// 	apiKey := getEnv("OPENAI_API_KEY", "")
+// 	if apiKey != "" {
+// 		log.Printf("OpenAI API key: %s", apiKey[:10]+"...") // 最初の10文字だけ表示
+// 	}
 
-	if apiKey == "" || apiKey == "your-openai-api-key" || apiKey == "test-mode" {
-		log.Println("OpenAI API key not set, using test mode")
-		h.openaiConn = nil // テストモード
-		return nil
-	}
+// 	if apiKey == "" || apiKey == "your-openai-api-key" || apiKey == "test-mode" {
+// 		log.Println("OpenAI API key not set, using test mode")
+// 		h.openaiConn = nil // テストモード
+// 		return nil
+// 	}
 
-	log.Println("Attempting to connect to OpenAI Realtime API...")
+// 	log.Println("Attempting to connect to OpenAI Realtime API...")
 
-	// OpenAI Realtime WebSocket接続
-	url := "wss://api.openai.com/v1/realtime?model=gpt-realtime"
-	headers := map[string][]string{
-		"Authorization": {fmt.Sprintf("Bearer %s", apiKey)},
-	}
+// 	// OpenAI Realtime WebSocket接続
+// 	url := "wss://api.openai.com/v1/realtime?model=gpt-realtime"
+// 	headers := map[string][]string{
+// 		"Authorization": {fmt.Sprintf("Bearer %s", apiKey)},
+// 	}
 
-	log.Printf("Connecting to: %s", url)
-	conn, _, err := websocket.DefaultDialer.Dial(url, headers)
-	if err != nil {
-		log.Printf("Failed to connect to OpenAI: %v, using test mode", err)
-		h.openaiConn = nil // テストモードにフォールバック
-		return nil
-	}
+// 	log.Printf("Connecting to: %s", url)
+// 	conn, _, err := websocket.DefaultDialer.Dial(url, headers)
+// 	if err != nil {
+// 		log.Printf("Failed to connect to OpenAI: %v, using test mode", err)
+// 		h.openaiConn = nil // テストモードにフォールバック
+// 		return nil
+// 	}
 
-	h.openaiConn = conn
+// 	h.openaiConn = conn
 
-	// 初期セッション設定
-	sessionUpdate := map[string]interface{}{
-		"type": "session.update",
-		"session": map[string]interface{}{
-			"type":              "realtime",
-			"instructions":      "あなたは24時間AIラジオのDJ。無音禁止、短文でテンポよく。Q&Aでは回答→10文字要約→次へ。",
-			"output_modalities": []string{"audio"},
-			"audio": map[string]interface{}{
-				"input": map[string]interface{}{
-					"turn_detection": map[string]interface{}{
-						"type":            "server_vad",
-						"idle_timeout_ms": 6000,
-					},
-				},
-				"output": map[string]interface{}{
-					"voice": "marin",
-				},
-			},
-		},
-	}
-
-	if err := conn.WriteJSON(sessionUpdate); err != nil {
-		log.Printf("Failed to send session update: %v, using test mode", err)
-		h.openaiConn = nil // テストモードにフォールバック
-		return nil
-	}
-
-	log.Println("Connected to OpenAI Realtime")
-	return nil
-}
+// 	log.Println("Connected to OpenAI Realtime")
+// 	return nil
+// }
 
 func (h *HostAgent) run() {
-	// 音声データ受信ループ
-	go h.handleOpenAIMessages()
+	// 音声データ受信ループ（将来のPTT実装用にコメントアウト）
+	// go h.handleOpenAIMessages()
 
 	// Director指示処理ループ
 	go h.handleDirectorInstructions()
@@ -290,106 +264,130 @@ func (h *HostAgent) run() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	// 初回発話
-	h.sendMessage("こんにちは！Radio-24です。24時間お疲れ様です。")
-
 	for {
 		select {
 		case <-h.ctx.Done():
 			return
 		case <-ticker.C:
 			// 定期発話（軽い話題やステーションID）
-			h.sendMessage("Radio-24、24時間放送中です。")
+			h.sendMessage("続きを話して")
 		}
 	}
 }
 
-func (h *HostAgent) handleOpenAIMessages() {
-	if h.openaiConn == nil {
-		// テストモード：テスト用の音声を生成
-		h.generateTestAudio()
-		return
-	}
+// handleOpenAIMessages OpenAI Realtimeメッセージ処理（将来のPTT実装用にコメントアウト）
+// func (h *HostAgent) handleOpenAIMessages() {
+// 	if h.openaiConn == nil {
+// 		return
+// 	}
 
-	log.Println("Starting OpenAI message handling loop...")
-	for {
-		select {
-		case <-h.ctx.Done():
-			return
-		default:
-			var msg map[string]interface{}
-			if err := h.openaiConn.ReadJSON(&msg); err != nil {
-				log.Printf("OpenAI connection error: %v", err)
-				h.reconnectOpenAI()
-				return
-			}
+// 	log.Println("Starting OpenAI message handling loop...")
+// 	for {
+// 		select {
+// 		case <-h.ctx.Done():
+// 			return
+// 		default:
+// 			var msg map[string]interface{}
+// 			if err := h.openaiConn.ReadJSON(&msg); err != nil {
+// 				log.Printf("OpenAI connection error: %v", err)
+// 				h.reconnectOpenAI()
+// 				return
+// 			}
 
-			log.Printf("Received OpenAI message: %+v", msg)
+// 			log.Printf("Received OpenAI message: %+v", msg)
 
-			// 音声出力をLiveKitにPublish
-			if msgType, ok := msg["type"].(string); ok {
-				switch msgType {
-				case "response.output_audio.delta":
-					if audioData, ok := msg["delta"].(string); ok {
-						log.Printf("Received audio delta, length: %d", len(audioData))
-						h.publishAudioToLiveKit(audioData)
-					}
-				case "response.done":
-					log.Println("OpenAI response completed")
-				case "session.created":
-					log.Println("OpenAI session created")
-				case "session.updated":
-					log.Println("OpenAI session updated")
-				case "conversation.item.added", "conversation.item.done", "response.output_audio.done", "response.output_audio_transcript.done", "response.content_part.done", "response.output_item.done", "rate_limits.updated":
-					// これらのメッセージは無視
-				default:
-					log.Printf("Unhandled message type: %s", msgType)
-				}
-			}
-		}
-	}
-}
+// 			// 音声出力をLiveKitにPublish
+// 			if msgType, ok := msg["type"].(string); ok {
+// 				switch msgType {
+// 				case "response.output_audio.delta":
+// 					if audioData, ok := msg["delta"].(string); ok {
+// 						log.Printf("Received audio delta, length: %d", len(audioData))
+// 						h.publishAudioToLiveKit(audioData)
+// 					}
+// 				case "response.done":
+// 					log.Println("OpenAI response completed")
+// 				case "session.created":
+// 					log.Println("OpenAI session created")
+// 				case "session.updated":
+// 					log.Println("OpenAI session updated")
+// 				case "conversation.item.added", "conversation.item.done", "response.output_audio.done", "response.output_audio_transcript.done", "response.content_part.done", "response.output_item.done", "rate_limits.updated":
+// 					// これらのメッセージは無視
+// 				default:
+// 					log.Printf("Unhandled message type: %s", msgType)
+// 				}
+// 			}
+// 		}
+// 	}
+// }
 
 func (h *HostAgent) sendMessage(content string) {
-	if h.openaiConn == nil {
+	apiKey := getEnv("OPENAI_API_KEY", "")
+	if apiKey == "" || apiKey == "your-openai-api-key" || apiKey == "test-mode" {
 		log.Printf("Test mode: Message would be sent: %s", content)
 		return
 	}
 
-	log.Printf("Sending message to OpenAI: %s", content)
+	log.Printf("Sending message to OpenAI TTS: %s", content)
 
-	message := map[string]interface{}{
-		"type": "conversation.item.create",
-		"item": map[string]interface{}{
-			"type": "message",
-			"role": "user",
-			"content": []map[string]interface{}{
-				{
-					"type": "input_text",
-					"text": content,
-				},
-			},
-		},
-	}
-
-	if err := h.openaiConn.WriteJSON(message); err != nil {
-		log.Printf("Failed to send message: %v", err)
+	// OpenAI TTS APIを使用して音声を生成
+	audioData, err := h.generateTTS(content, apiKey)
+	if err != nil {
+		log.Printf("Failed to generate TTS: %v", err)
 		return
 	}
 
-	log.Printf("Message sent successfully: %s", content)
+	// 生成された音声をLiveKitに送信
+	h.publishAudioToLiveKit(audioData)
+	log.Printf("TTS audio generated and published successfully")
+}
 
-	// 音声応答を強制的に生成
-	responseCreate := map[string]interface{}{
-		"type": "response.create",
+// generateTTS OpenAI TTS APIを使用してテキストを音声に変換
+func (h *HostAgent) generateTTS(text, apiKey string) (string, error) {
+	url := "https://api.openai.com/v1/audio/speech"
+
+	requestBody := map[string]interface{}{
+		"model":           "tts-1",
+		"input":           text,
+		"voice":           "marin",
+		"response_format": "pcm",
+		"speed":           1.0,
 	}
 
-	if err := h.openaiConn.WriteJSON(responseCreate); err != nil {
-		log.Printf("Failed to create response: %v", err)
-		return
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	log.Printf("Response creation requested")
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("TTS API error: %d - %s", resp.StatusCode, string(body))
+	}
+
+	audioBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// PCMデータをBase64エンコード
+	audioBase64 := base64.StdEncoding.EncodeToString(audioBytes)
+	log.Printf("Generated TTS audio: %d bytes, base64 length: %d", len(audioBytes), len(audioBase64))
+
+	return audioBase64, nil
 }
 
 func (h *HostAgent) publishAudioToLiveKit(audioData string) {
@@ -399,24 +397,6 @@ func (h *HostAgent) publishAudioToLiveKit(audioData string) {
 	}
 
 	log.Printf("publishAudioToLiveKit called with data length: %d", len(audioData))
-
-	// テスト用の音声データかチェック
-	if strings.HasPrefix(audioData, "test_audio_") {
-		log.Printf("Test mode: Publishing test audio data: %s", audioData)
-		// テスト用の音声データを生成（実際の音声ではなく、テスト用のデータ）
-		testAudioBytes := generateTestAudioBytes(audioData)
-		log.Printf("Generated test audio bytes: %d bytes", len(testAudioBytes))
-
-		// テストデータをBase64エンコードしてPCMWriterに送信
-		testAudioB64 := base64.StdEncoding.EncodeToString(testAudioBytes)
-		log.Printf("Test audio base64 length: %d", len(testAudioB64))
-		if err := h.pcmWriter.WriteB64Delta(testAudioB64); err != nil {
-			log.Printf("Failed to write test audio sample: %v", err)
-		} else {
-			log.Printf("Successfully published test audio")
-		}
-		return
-	}
 
 	// PCMWriterを使用してBase64デルタデータを処理
 	log.Printf("Processing real audio data via PCMWriter, calling WriteB64Delta...")
@@ -444,90 +424,22 @@ func (h *HostAgent) reconnectLiveKit() {
 	})
 }
 
-func (h *HostAgent) reconnectOpenAI() {
-	if h.reconnectTimer != nil {
-		h.reconnectTimer.Stop()
-	}
+// reconnectOpenAI OpenAI Realtime再接続（将来のPTT実装用にコメントアウト）
+// func (h *HostAgent) reconnectOpenAI() {
+// 	if h.reconnectTimer != nil {
+// 		h.reconnectTimer.Stop()
+// 	}
 
-	h.reconnectTimer = time.AfterFunc(5*time.Second, func() {
-		log.Println("Attempting to reconnect to OpenAI...")
-		if err := h.connectToOpenAI(); err != nil {
-			log.Printf("Reconnection failed: %v", err)
-			h.reconnectOpenAI() // 再試行
-		} else {
-			log.Println("Reconnected to OpenAI")
-		}
-	})
-}
-
-func (h *HostAgent) generateTestAudio() {
-	log.Println("Starting test audio generation...")
-
-	// テスト用の音声メッセージ
-	messages := []string{
-		"Radio-24、24時間放送中です。",
-		"こんにちは、リスナーの皆さん。",
-		"今日も素晴らしい一日をお過ごしください。",
-		"音楽とお話でお楽しみいただいています。",
-		"ご質問やご感想をお待ちしています。",
-	}
-
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	messageIndex := 0
-
-	for {
-		select {
-		case <-h.ctx.Done():
-			return
-		case <-ticker.C:
-			if messageIndex < len(messages) {
-				message := messages[messageIndex]
-				log.Printf("Test mode: Sending message: %s", message)
-
-				// テスト用の音声データを生成（実際の音声ではなく、テスト用のデータ）
-				testAudioData := generateTestAudioData(message)
-				h.publishAudioToLiveKit(testAudioData)
-
-				messageIndex++
-			} else {
-				messageIndex = 0 // ループ
-			}
-		}
-	}
-}
-
-func generateTestAudioData(text string) string {
-	// テスト用の音声データを生成（実際の音声ではなく、テスト用のデータ）
-	// 実際の実装では、ここでテキストを音声に変換する
-	return fmt.Sprintf("test_audio_%s", text)
-}
-
-func generateTestAudioBytes(audioData string) []byte {
-	// テスト用の音声バイトデータを生成（実際の音声ではなく、テスト用のデータ）
-	// 実際の実装では、ここでテキストを音声に変換する
-	// 20ms分のPCM16データを生成（24kHz, 16bit）- 960バイト
-	sampleRate := 24000
-	duration := 20 // milliseconds
-	samples := sampleRate * duration / 1000
-	audioBytes := make([]byte, samples*2) // 16bit = 2bytes per sample
-
-	// テスト用の音声波形を生成（サイン波）
-	for i := 0; i < samples; i++ {
-		// 440Hzのサイン波を生成
-		amplitude := 32767 // 16bitの最大値
-		frequency := 440.0
-		time := float64(i) / float64(sampleRate)
-		sample := int16(float64(amplitude) * 0.1 * math.Sin(2*math.Pi*frequency*time))
-
-		// Little-endianでバイトに変換
-		audioBytes[i*2] = byte(sample & 0xFF)
-		audioBytes[i*2+1] = byte((sample >> 8) & 0xFF)
-	}
-
-	return audioBytes
-}
+// 	h.reconnectTimer = time.AfterFunc(5*time.Second, func() {
+// 		log.Println("Attempting to reconnect to OpenAI...")
+// 		if err := h.connectToOpenAI(); err != nil {
+// 			log.Printf("Reconnection failed: %v", err)
+// 			h.reconnectOpenAI() // 再試行
+// 		} else {
+// 			log.Println("Reconnected to OpenAI")
+// 		}
+// 	})
+// }
 
 // handleDirectorInstructions Directorからの指示を処理
 func (h *HostAgent) handleDirectorInstructions() {
@@ -546,42 +458,42 @@ func (h *HostAgent) handleDirectorInstructions() {
 	}
 }
 
-// updateOpenAIPrompt OpenAIセッションのプロンプトを更新
-func (h *HostAgent) updateOpenAIPrompt(newPrompt string) {
-	if h.openaiConn == nil {
-		log.Println("OpenAI connection not available, skipping prompt update")
-		return
-	}
+// updateOpenAIPrompt OpenAIセッションのプロンプトを更新（将来のPTT実装用にコメントアウト）
+// func (h *HostAgent) updateOpenAIPrompt(newPrompt string) {
+// 	if h.openaiConn == nil {
+// 		log.Println("OpenAI connection not available, skipping prompt update")
+// 		return
+// 	}
 
-	log.Printf("Updating OpenAI prompt: %s", newPrompt)
+// 	log.Printf("Updating OpenAI prompt: %s", newPrompt)
 
-	sessionUpdate := map[string]interface{}{
-		"type": "session.update",
-		"session": map[string]interface{}{
-			"type":              "realtime",
-			"instructions":      newPrompt,
-			"output_modalities": []string{"audio"},
-			"audio": map[string]interface{}{
-				"input": map[string]interface{}{
-					"turn_detection": map[string]interface{}{
-						"type":            "server_vad",
-						"idle_timeout_ms": 6000,
-					},
-				},
-				"output": map[string]interface{}{
-					"voice": "marin",
-				},
-			},
-		},
-	}
+// 	sessionUpdate := map[string]interface{}{
+// 		"type": "session.update",
+// 		"session": map[string]interface{}{
+// 			"type":              "realtime",
+// 			"instructions":      newPrompt,
+// 			"output_modalities": []string{"audio"},
+// 			"audio": map[string]interface{}{
+// 				"input": map[string]interface{}{
+// 					"turn_detection": map[string]interface{}{
+// 						"type":            "server_vad",
+// 						"idle_timeout_ms": 6000,
+// 					},
+// 				},
+// 				"output": map[string]interface{}{
+// 					"voice": "marin",
+// 				},
+// 			},
+// 		},
+// 	}
 
-	if err := h.openaiConn.WriteJSON(sessionUpdate); err != nil {
-		log.Printf("Failed to update OpenAI prompt: %v", err)
-		return
-	}
+// 	if err := h.openaiConn.WriteJSON(sessionUpdate); err != nil {
+// 		log.Printf("Failed to update OpenAI prompt: %v", err)
+// 		return
+// 	}
 
-	log.Println("OpenAI prompt updated successfully")
-}
+// 	log.Println("OpenAI prompt updated successfully")
+// }
 
 func (h *HostAgent) startHTTPServer() {
 	port := getEnv("PORT", "8080")
@@ -625,36 +537,6 @@ func (h *HostAgent) startHTTPServer() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
 			"status": "received",
-		})
-	})
-
-	// Program Directorからのプロンプト更新を受け取るエンドポイント
-	http.HandleFunc("/director/prompt", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		var promptUpdate struct {
-			Prompt string `json:"prompt"`
-		}
-
-		if err := json.NewDecoder(r.Body).Decode(&promptUpdate); err != nil {
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
-			return
-		}
-
-		log.Printf("Received prompt update from director")
-		h.currentPrompt = promptUpdate.Prompt
-
-		// OpenAIセッションのプロンプトを更新
-		if h.openaiConn != nil {
-			h.updateOpenAIPrompt(promptUpdate.Prompt)
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"status": "updated",
 		})
 	})
 
