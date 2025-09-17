@@ -28,8 +28,9 @@ type HostAgent struct {
 	reconnectTimer *time.Timer
 	ctx            context.Context
 	cancel         context.CancelFunc
-	directorChan   chan string
 	currentPrompt  string
+	scriptTopics   []string
+	currentTopic   int
 }
 
 type PCMWriter struct {
@@ -100,11 +101,9 @@ func attenuateInPlace(b []byte, gain float64) {
 	}
 }
 
-type DirectorMessage struct {
-	Type    string `json:"type"`
-	Content string `json:"content"`
-	Theme   string `json:"theme"`
-	Segment string `json:"segment"`
+type ScriptRequest struct {
+	Topic string `json:"topic"`
+	Style string `json:"style"`
 }
 
 func main() {
@@ -128,8 +127,17 @@ func main() {
 	agent := &HostAgent{
 		ctx:           ctx,
 		cancel:        cancel,
-		directorChan:  make(chan string, 100),
-		currentPrompt: "あなたは24時間AIラジオのDJ。無音禁止、短文でテンポよく。Q&Aでは回答→10文字要約→次へ。",
+		scriptTopics: []string{
+			"今日の天気予報",
+			"最新のニュース",
+			"音楽の話題",
+			"リスナーからのメッセージ",
+			"今日の出来事",
+			"季節の話題",
+			"テクノロジーの話題",
+			"エンターテイメント",
+		},
+		currentTopic: 0,
 	}
 
 	// HTTPサーバーを起動（Cloud Run用）
@@ -255,9 +263,6 @@ func (h *HostAgent) run() {
 	// 音声データ受信ループ（将来のPTT実装用にコメントアウト）
 	// go h.handleOpenAIMessages()
 
-	// Director指示処理ループ
-	go h.handleDirectorInstructions()
-
 	// LiveKitメッセージハンドリングは不要（SDKが自動処理）
 
 	// 定期発話ループ（30秒ごと）
@@ -269,8 +274,8 @@ func (h *HostAgent) run() {
 		case <-h.ctx.Done():
 			return
 		case <-ticker.C:
-			// 定期発話（軽い話題やステーションID）
-			h.sendMessage("続きを話して")
+			// 台本を生成して発話
+			h.generateAndSpeakScript()
 		}
 	}
 }
@@ -348,7 +353,7 @@ func (h *HostAgent) generateTTS(text, apiKey string) (string, error) {
 	requestBody := map[string]interface{}{
 		"model":           "tts-1",
 		"input":           text,
-		"voice":           "marin",
+		"voice":           "nova",
 		"response_format": "pcm",
 		"speed":           1.0,
 	}
@@ -408,6 +413,77 @@ func (h *HostAgent) publishAudioToLiveKit(audioData string) {
 	log.Printf("Audio data published via PCMWriter successfully")
 }
 
+// generateScript OpenAI APIを使用して台本を生成
+func (h *HostAgent) generateScript(prompt string) (string, error) {
+	apiKey := getEnv("OPENAI_API_KEY", "")
+	if apiKey == "" || apiKey == "your-openai-api-key" || apiKey == "test-mode" {
+		log.Println("OpenAI API key not set, using test mode")
+		return "テストモードです。ラジオ24をお聞きいただき、ありがとうございます。", nil
+	}
+
+	url := "https://api.openai.com/v1/chat/completions"
+
+	requestBody := map[string]interface{}{
+		"model": "gpt-4o-mini",
+		"messages": []map[string]string{
+			{
+				"role":    "system",
+				"content": "あなたは24時間AIラジオのDJです。自然で親しみやすい口調で、リスナーとの距離感を大切にしてください。",
+			},
+			{
+				"role":    "user",
+				"content": prompt,
+			},
+		},
+		"max_tokens":  200,
+		"temperature": 0.8,
+		"top_p":       0.9,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("OpenAI API error: %d - %s", resp.StatusCode, string(body))
+	}
+
+	var response struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if len(response.Choices) == 0 {
+		return "", fmt.Errorf("no response from OpenAI")
+	}
+
+	return response.Choices[0].Message.Content, nil
+}
+
 func (h *HostAgent) reconnectLiveKit() {
 	if h.reconnectTimer != nil {
 		h.reconnectTimer.Stop()
@@ -441,21 +517,29 @@ func (h *HostAgent) reconnectLiveKit() {
 // 	})
 // }
 
-// handleDirectorInstructions Directorからの指示を処理
-func (h *HostAgent) handleDirectorInstructions() {
-	log.Println("Starting director instruction handling loop...")
+// generateAndSpeakScript 台本を生成してTTSで読み上げ
+func (h *HostAgent) generateAndSpeakScript() {
+	// 現在のトピックを取得
+	topic := h.scriptTopics[h.currentTopic]
+	h.currentTopic = (h.currentTopic + 1) % len(h.scriptTopics)
 
-	for {
-		select {
-		case <-h.ctx.Done():
-			return
-		case instruction := <-h.directorChan:
-			log.Printf("Processing director instruction: %s", instruction)
+	// 台本生成用のプロンプトを作成
+	prompt := fmt.Sprintf("%s トピック「%s」について、ラジオDJとして30秒程度の内容を話してください。自然で親しみやすい口調で、リスナーとの距離感を大切にしてください。", h.currentPrompt, topic)
 
-			// Directorからの指示をOpenAIに送信
-			h.sendMessage(instruction)
-		}
+	log.Printf("Generating script for topic: %s", topic)
+
+	// OpenAI APIを使用して台本を生成
+	script, err := h.generateScript(prompt)
+	if err != nil {
+		log.Printf("Failed to generate script: %v", err)
+		// フォールバック用の簡単なメッセージ
+		script = fmt.Sprintf("こんにちは、ラジオ24です。%sについてお話しします。", topic)
 	}
+
+	log.Printf("Generated script: %s", script)
+
+	// 生成された台本をTTSで読み上げ
+	h.sendMessage(script)
 }
 
 // updateOpenAIPrompt OpenAIセッションのプロンプトを更新（将来のPTT実装用にコメントアウト）
@@ -507,36 +591,65 @@ func (h *HostAgent) startHTTPServer() {
 		})
 	})
 
-	// Program Directorからの指示を受け取るエンドポイント
-	http.HandleFunc("/director/instruction", func(w http.ResponseWriter, r *http.Request) {
+	// 台本生成エンドポイント
+	http.HandleFunc("/script/generate", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		var instruction struct {
-			Type    string `json:"type"`
-			Content string `json:"content"`
-		}
-
-		if err := json.NewDecoder(r.Body).Decode(&instruction); err != nil {
+		var req ScriptRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
 
-		log.Printf("Received director instruction: %s - %s", instruction.Type, instruction.Content)
+		log.Printf("Received script generation request: topic=%s, style=%s", req.Topic, req.Style)
 
-		// Directorからの指示をチャンネルに送信
-		select {
-		case h.directorChan <- instruction.Content:
-			log.Printf("Director instruction queued: %s", instruction.Content)
-		default:
-			log.Printf("Director channel full, dropping instruction: %s", instruction.Content)
+		// プロンプトを作成
+		prompt := fmt.Sprintf("%s トピック「%s」について、ラジオDJとして30秒程度の内容を話してください。", h.currentPrompt, req.Topic)
+		if req.Style != "" {
+			prompt += fmt.Sprintf(" スタイル: %s", req.Style)
+		}
+
+		// 台本を生成
+		script, err := h.generateScript(prompt)
+		if err != nil {
+			log.Printf("Failed to generate script: %v", err)
+			http.Error(w, "Failed to generate script", http.StatusInternalServerError)
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
-			"status": "received",
+			"script": script,
+		})
+	})
+
+	// 即座に発話するエンドポイント
+	http.HandleFunc("/speak", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			Text string `json:"text"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("Received speak request: %s", req.Text)
+
+		// 即座に発話
+		h.sendMessage(req.Text)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "speaking",
 		})
 	})
 

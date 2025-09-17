@@ -346,6 +346,14 @@ resource "google_cloud_run_v2_service" "host" {
           }
         }
       }
+      env {
+        name  = "OPENAI_REALTIME_MODEL"
+        value = "gpt-realtime"
+      }
+      env {
+        name  = "OPENAI_REALTIME_VOICE"
+        value = "marin"
+      }
     }
 
     scaling {
@@ -377,6 +385,14 @@ resource "google_cloud_run_service_iam_policy" "web" {
   location = google_cloud_run_v2_service.web.location
   project  = google_cloud_run_v2_service.web.project
   service  = google_cloud_run_v2_service.web.name
+
+  policy_data = data.google_iam_policy.public.policy_data
+}
+
+resource "google_cloud_run_service_iam_policy" "host" {
+  location = google_cloud_run_v2_service.host.location
+  project  = google_cloud_run_v2_service.host.project
+  service  = google_cloud_run_v2_service.host.name
 
   policy_data = data.google_iam_policy.public.policy_data
 }
