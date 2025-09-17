@@ -208,7 +208,7 @@ resource "google_cloud_run_v2_service" "api" {
       }
       env {
         name  = "ALLOWED_ORIGIN"
-        value = google_cloud_run_v2_service.web.uri
+        value = "https://web-462203182335.asia-northeast1.run.app"
       }
     }
 
@@ -248,7 +248,7 @@ resource "google_cloud_run_v2_service" "web" {
 
       env {
         name  = "NEXT_PUBLIC_API_BASE"
-        value = google_cloud_run_v2_service.api.uri
+        value = "https://api-462203182335.asia-northeast1.run.app"
       }
       env {
         name  = "NEXT_PUBLIC_OPENAI_REALTIME_MODEL"
