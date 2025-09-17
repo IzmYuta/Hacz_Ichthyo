@@ -152,15 +152,30 @@ resource "google_cloud_run_v2_service" "api" {
 
       env {
         name  = "POSTGRES_HOST"
-        value = google_sql_database_instance.main.private_ip_address
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.postgres_host.secret_id
+            version = "latest"
+          }
+        }
       }
       env {
         name  = "POSTGRES_PORT"
-        value = "5432"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.postgres_port.secret_id
+            version = "latest"
+          }
+        }
       }
       env {
         name  = "POSTGRES_USER"
-        value = google_sql_user.main.name
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.postgres_user.secret_id
+            version = "latest"
+          }
+        }
       }
       env {
         name  = "POSTGRES_PASSWORD"
@@ -173,7 +188,12 @@ resource "google_cloud_run_v2_service" "api" {
       }
       env {
         name  = "POSTGRES_DB"
-        value = google_sql_database.main.name
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.postgres_db.secret_id
+            version = "latest"
+          }
+        }
       }
       env {
         name  = "OPENAI_API_KEY"
@@ -447,4 +467,65 @@ resource "google_secret_manager_secret" "livekit_url" {
 resource "google_secret_manager_secret_version" "livekit_url" {
   secret      = google_secret_manager_secret.livekit_url.id
   secret_data = var.livekit_url
+}
+
+# PostgreSQL connection secrets
+resource "google_secret_manager_secret" "postgres_host" {
+  secret_id = "postgres-host"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret_version" "postgres_host" {
+  secret      = google_secret_manager_secret.postgres_host.id
+  secret_data = var.postgres_host
+}
+
+resource "google_secret_manager_secret" "postgres_port" {
+  secret_id = "postgres-port"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret_version" "postgres_port" {
+  secret      = google_secret_manager_secret.postgres_port.id
+  secret_data = var.postgres_port
+}
+
+resource "google_secret_manager_secret" "postgres_user" {
+  secret_id = "postgres-user"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret_version" "postgres_user" {
+  secret      = google_secret_manager_secret.postgres_user.id
+  secret_data = var.postgres_user
+}
+
+resource "google_secret_manager_secret" "postgres_db" {
+  secret_id = "postgres-db"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret_version" "postgres_db" {
+  secret      = google_secret_manager_secret.postgres_db.id
+  secret_data = var.postgres_db
 }
