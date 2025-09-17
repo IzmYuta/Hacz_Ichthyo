@@ -48,7 +48,6 @@ steps:
 # Build options
 options:
   logging: CLOUD_LOGGING_ONLY
-  machineType: E2_HIGHCPU_4
 
 # Timeout
 timeout: '600s'
