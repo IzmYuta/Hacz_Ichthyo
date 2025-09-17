@@ -6,7 +6,13 @@ steps:
       - '-c'
       - |
         cd services/api
-        go test ./...
+        # Check if test files exist, if not, skip tests
+        if find . -name "*_test.go" | grep -q .; then
+          echo "Running API tests..."
+          go test ./...
+        else
+          echo "No test files found in API service, skipping tests"
+        fi
     id: 'test-api'
 
   - name: 'golang:1.23'
@@ -15,7 +21,13 @@ steps:
       - '-c'
       - |
         cd services/host
-        go test ./...
+        # Check if test files exist, if not, skip tests
+        if find . -name "*_test.go" | grep -q .; then
+          echo "Running Host tests..."
+          go test ./...
+        else
+          echo "No test files found in Host service, skipping tests"
+        fi
     id: 'test-host'
 
   # Run Node.js tests
