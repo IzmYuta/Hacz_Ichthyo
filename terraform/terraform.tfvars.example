@@ -3,6 +3,10 @@ region     = "asia-northeast1"
 
 # Sensitive variables - set these via environment variables or terraform.tfvars
 # postgres_password = "your-secure-password"
+# postgres_host     = "xxx.xxx.xxx.xxx"
+# postgres_port     = "5432"
+# postgres_user     = "radio24-user"
+# postgres_db       = "radio24"
 # openai_api_key    = "your-openai-api-key"
 # livekit_api_key   = "your-livekit-api-key"
 # livekit_api_secret = "your-livekit-api-secret"

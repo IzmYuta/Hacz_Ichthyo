@@ -39,3 +39,27 @@ variable "livekit_url" {
   type        = string
   sensitive   = true
 }
+
+variable "postgres_host" {
+  description = "PostgreSQL host"
+  type        = string
+  sensitive   = true
+}
+
+variable "postgres_port" {
+  description = "PostgreSQL port"
+  type        = string
+  sensitive   = true
+}
+
+variable "postgres_user" {
+  description = "PostgreSQL user"
+  type        = string
+  sensitive   = true
+}
+
+variable "postgres_db" {
+  description = "PostgreSQL database name"
+  type        = string
+  sensitive   = true
+}
