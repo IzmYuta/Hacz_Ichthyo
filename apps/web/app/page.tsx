@@ -1,111 +1,99 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Box, Button, VStack, Text, HStack } from '@chakra-ui/react';
+import { Room, RoomEvent, RemoteTrackPublication, RemoteAudioTrack } from 'livekit-client';
 
 export default function OnAir() {
   const [connected, setConnected] = useState(false);
   const [subtitles, setSubtitles] = useState('');
   const [theme, setTheme] = useState({ title: 'Radio-24', color: '#1a1a2e' });
-  const pcRef = useRef<RTCPeerConnection|null>(null);
-  const dataRef = useRef<RTCDataChannel|null>(null);
+  const [ws, setWs] = useState<WebSocket | null>(null);
+  const roomRef = useRef<Room | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
+
+  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8080';
+
+  useEffect(() => {
+    // WebSocket接続
+    const wsUrl = API_BASE.replace('http', 'ws') + '/ws/ptt';
+    const websocket = new WebSocket(wsUrl);
+    
+    websocket.onopen = () => {
+      console.log('PTT WebSocket connected');
+    };
+    
+    websocket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'ptt_queued') {
+        console.log('PTT queued:', data.id);
+      }
+    };
+    
+    setWs(websocket);
+    
+    return () => {
+      websocket.close();
+    };
+  }, [API_BASE]);
 
   async function connect() {
     try {
-      // 1) サーバから短命クライアントシークレットを取得
-      const apiBase = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8080';
-      const eph = await fetch(`${apiBase}/v1/realtime/ephemeral`, { method:'POST' }).then(r=>r.json());
-      const token = eph.client_secret || eph.value; // shape差異に対応
-
-      if (!token) {
-        console.error('Failed to get ephemeral token');
-        return;
-      }
-
-      // 2) WebRTCピア接続
-      const pc = new RTCPeerConnection();
-      pcRef.current = pc;
-
-      // 受信音声を再生
-      pc.ontrack = (e) => {
-        if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = e.streams[0];
-          remoteAudioRef.current.play().catch(()=>{});
-        }
-      };
-
-      // イベント受信用データチャネル
-      const dc = pc.createDataChannel('oai-events');
-      dataRef.current = dc;
-      dc.onmessage = (ev) => {
-        try {
-          const msg = JSON.parse(ev.data);
-          // 例: 字幕用（response.output_text.delta）
-          if (msg.type === 'response.output_text.delta') {
-            setSubtitles((s) => s + msg.delta);
-          }
-        } catch {}
-      };
-
-      // マイクを送信
-      const ms = await navigator.mediaDevices.getUserMedia({ audio: true });
-      for (const track of ms.getTracks()) pc.addTrack(track, ms);
-
-      // SDPオファ生成
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      // 3) RealtimeへSDPをPOST（Bearer: ephemeral）
-      const model = process.env.NEXT_PUBLIC_OPENAI_REALTIME_MODEL || 'gpt-realtime';
-      const sdpResp = await fetch(`https://api.openai.com/v1/realtime?model=${model}`, {
+      const res = await fetch(`${API_BASE}/v1/room/join`, {
         method: 'POST',
-        body: offer.sdp!,
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/sdp'
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identity: crypto.randomUUID() })
+      });
+      
+      const { url, token } = await res.json();
+      
+      const room = new Room();
+      await room.connect(url, token);
+      
+      roomRef.current = room;
+      
+      // 参加者情報をログに出力
+      console.log('Connected to room:', room.name);
+      console.log('Participants:', room.numParticipants);
+      room.remoteParticipants.forEach((participant) => {
+        console.log('Participant:', participant.identity, 'tracks:', participant.audioTrackPublications.size);
+      });
+      
+      room.on(RoomEvent.TrackSubscribed, (_track, publication, _participant) => {
+        const track = (publication as RemoteTrackPublication).track as RemoteAudioTrack;
+        console.log('Track subscribed:', track?.kind, publication.source);
+        if (track) {
+          track.attach(); // 自動再生
+          console.log('Audio track attached');
         }
       });
-
-      const answer = { type: 'answer', sdp: await sdpResp.text() } as RTCSessionDescriptionInit;
-      await pc.setRemoteDescription(answer);
-
-      // 4) セッション初期化（声・VAD・トーンなど）
-      const init = {
-        type: 'session.update',
-        session: {
-          type: 'realtime',
-          instructions: 'あなたは深夜ラジオのDJ。短く・テンポ良く・ポジティブに。固有名詞ははっきり復唱。',
-          voice: 'marin',
-          audio: { input: { turn_detection: { type: 'server_vad', idle_timeout_ms: 6000 } } }
+      
+      room.on(RoomEvent.TrackUnsubscribed, (track, publication, _participant) => {
+        const audioTrack = (publication as RemoteTrackPublication).track as RemoteAudioTrack;
+        if (audioTrack) {
+          audioTrack.detach();
         }
-      };
-      dc.send(JSON.stringify(init));
-
-      // 最初の挨拶
-      dc.send(JSON.stringify({
-        type: 'response.create',
-        response: { modalities: ['audio','text'], instructions: 'ハックツラジオ、Radio-24へようこそ。30秒だけ投稿どうぞ！' }
-      }));
-
+      });
+      
       setConnected(true);
     } catch (error) {
-      console.error('Connection error:', error);
+      console.error('Failed to join room:', error);
     }
   }
 
   function disconnect() {
-    dataRef.current?.close();
-    pcRef.current?.close();
+    if (roomRef.current) {
+      roomRef.current.disconnect();
+      roomRef.current = null;
+    }
     setConnected(false);
     setSubtitles('');
   }
 
   async function rotateTheme() {
     try {
-      const apiBase = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8080';
-      const response = await fetch(`${apiBase}/v1/theme/rotate`, { method: 'POST' });
+      const response = await fetch(`${API_BASE}/v1/theme/rotate`, { method: 'POST' });
       const newTheme = await response.json();
       setTheme(newTheme);
     } catch (error) {
