@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -21,23 +22,31 @@ import (
 )
 
 type HostAgent struct {
-	openaiConn     *websocket.Conn
-	room           *lksdk.Room
-	pcmTrack       *lkmedia.PCMLocalTrack
-	pcmWriter      *PCMWriter
-	reconnectTimer *time.Timer
-	ctx            context.Context
-	cancel         context.CancelFunc
-	currentPrompt  string
-	scriptTopics   []string
-	currentTopic   int
-	dialogueMode   bool
-	dialogueConn   *websocket.Conn
+	openaiConn       *websocket.Conn
+	room             *lksdk.Room
+	pcmTrack         *lkmedia.PCMLocalTrack
+	pcmWriter        *PCMWriter
+	reconnectTimer   *time.Timer
+	ctx              context.Context
+	cancel           context.CancelFunc
+	currentPrompt    string
+	scriptTopics     []string
+	currentTopic     int
+	dialogueMode     bool
+	dialogueConn     *websocket.Conn
+	audioPublication *lksdk.LocalTrackPublication
+	// ユーザー音声用のトラック
+	userPcmTrack         *lkmedia.PCMLocalTrack
+	userPcmWriter        *PCMWriter
+	userAudioPublication *lksdk.LocalTrackPublication
+	// タイマーリセット用チャンネル
+	timerResetChan chan struct{}
 }
 
 type PCMWriter struct {
 	buf      []byte
 	pcmTrack *lkmedia.PCMLocalTrack
+	mu       sync.Mutex
 }
 
 const frameBytes = 960 // 20ms @ 24kHz mono 16-bit
@@ -47,6 +56,9 @@ func NewPCMWriter(t *lkmedia.PCMLocalTrack) *PCMWriter {
 }
 
 func (w *PCMWriter) WriteB64Delta(b64 string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	log.Printf("WriteB64Delta called with base64 length: %d", len(b64))
 
 	raw, err := base64.StdEncoding.DecodeString(b64)
@@ -84,6 +96,15 @@ func (w *PCMWriter) WriteB64Delta(b64 string) error {
 	}
 	log.Printf("WriteB64Delta completed: wrote %d frames, %d bytes remaining in buffer", framesWritten, len(w.buf))
 	return nil
+}
+
+// ClearBuffer 音声バッファをクリア
+func (w *PCMWriter) ClearBuffer() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	log.Printf("Clearing audio buffer (%d bytes)", len(w.buf))
+	w.buf = w.buf[:0]
 }
 
 func attenuateInPlace(b []byte, gain float64) {
@@ -139,8 +160,9 @@ func main() {
 			"テクノロジーの話題",
 			"エンターテイメント",
 		},
-		currentTopic: 0,
-		dialogueMode: false,
+		currentTopic:   0,
+		dialogueMode:   false,
+		timerResetChan: make(chan struct{}),
 	}
 
 	// HTTPサーバーを起動（Cloud Run用）
@@ -214,7 +236,7 @@ func (h *HostAgent) connectToLiveKit() error {
 
 	// トラックをルームに公開
 	log.Println("Publishing PCM audio track to room...")
-	_, err = h.room.LocalParticipant.PublishTrack(h.pcmTrack, &lksdk.TrackPublicationOptions{
+	h.audioPublication, err = h.room.LocalParticipant.PublishTrack(h.pcmTrack, &lksdk.TrackPublicationOptions{
 		Name: "radio-24-host",
 	})
 	if err != nil {
@@ -269,6 +291,12 @@ func (h *HostAgent) connectToOpenAIRealtime() error {
 		return err
 	}
 
+	// 初回応答を待つ（セッション設定後の自動応答）
+	if err := h.waitForInitialResponse(); err != nil {
+		log.Printf("Failed to receive initial response: %v", err)
+		// エラーでも続行（メッセージ処理ループは開始する）
+	}
+
 	// メッセージ処理ループを開始
 	go h.handleDialogueMessages()
 
@@ -286,7 +314,7 @@ func (h *HostAgent) setupDialogueSession() error {
 		"type": "session.update",
 		"session": map[string]interface{}{
 			"type":              "realtime",
-			"instructions":      "あなたは24時間AIラジオのDJです。リスナーとの対話では、自然で親しみやすい口調で、ラジオDJらしい応答をしてください。短く、親しみやすく、エンターテイメント性のある会話を心がけてください。",
+			"instructions":      "あなたは24時間AIラジオのDJです。リスナーとの対話では、自然で親しみやすい口調で、ラジオDJらしい応答をしてください。短く、親しみやすく、エンターテイメント性のある会話を心がけてください。対話モードが開始されたら、まずは「こんにちは！ラジオ24のDJです。何かお話ししたいことはありますか？」のような挨拶をしてください。",
 			"output_modalities": []string{"audio"},
 			"audio": map[string]interface{}{
 				"input": map[string]interface{}{
@@ -306,8 +334,82 @@ func (h *HostAgent) setupDialogueSession() error {
 		return fmt.Errorf("failed to setup dialogue session: %w", err)
 	}
 
+	// セッション設定後に応答を促す（正しいAPI形式）
+	responseRequest := map[string]interface{}{
+		"type": "response.create",
+	}
+
+	if err := h.dialogueConn.WriteJSON(responseRequest); err != nil {
+		log.Printf("Failed to request initial response: %v", err)
+		// エラーでも続行
+	} else {
+		log.Println("Requested initial response from OpenAI")
+	}
+
 	log.Println("Dialogue session setup completed")
 	return nil
+}
+
+// waitForInitialResponse 初回応答を待つ
+func (h *HostAgent) waitForInitialResponse() error {
+	if h.dialogueConn == nil {
+		return fmt.Errorf("dialogue connection not available")
+	}
+
+	log.Println("Waiting for initial response from OpenAI Realtime...")
+
+	// タイムアウト設定（10秒）
+	timeout := time.After(10 * time.Second)
+
+	for {
+		select {
+		case <-timeout:
+			log.Println("Timeout waiting for initial response")
+			return fmt.Errorf("timeout waiting for initial response")
+		default:
+			// メッセージを読み取り
+			var msg map[string]interface{}
+			if err := h.dialogueConn.ReadJSON(&msg); err != nil {
+				log.Printf("Error reading initial response: %v", err)
+				return err
+			}
+
+			log.Printf("Received initial message: %+v", msg)
+
+			// メッセージタイプを確認
+			if msgType, ok := msg["type"].(string); ok {
+				switch msgType {
+				case "response.output_audio.delta":
+					// 初回応答音声を受信
+					if audioData, ok := msg["delta"].(string); ok {
+						log.Printf("Received initial audio response, length: %d", len(audioData))
+						h.publishAudioToLiveKit(audioData)
+					}
+				case "response.done":
+					// 初回応答完了
+					log.Println("Initial response completed")
+					return nil
+				case "session.created":
+					log.Println("Session created, continuing to wait for response...")
+					continue
+				case "session.updated":
+					log.Println("Session updated, continuing to wait for response...")
+					continue
+				case "conversation.item.added", "conversation.item.done", "response.output_audio.done", "response.output_audio_transcript.done", "response.content_part.done", "response.output_item.done", "rate_limits.updated":
+					// これらのメッセージは無視して続行
+					continue
+				case "error":
+					if errorData, ok := msg["error"].(map[string]interface{}); ok {
+						log.Printf("Error in initial response: %v", errorData)
+						return fmt.Errorf("error in initial response: %v", errorData)
+					}
+				default:
+					log.Printf("Unknown message type in initial response: %s", msgType)
+					continue
+				}
+			}
+		}
+	}
 }
 
 // handleDialogueMessages 対話メッセージの処理
@@ -347,6 +449,20 @@ func (h *HostAgent) handleDialogueMessages() {
 					log.Println("Dialogue session updated")
 				case "conversation.item.added", "conversation.item.done", "response.output_audio.done", "response.output_audio_transcript.done", "response.content_part.done", "response.output_item.done", "rate_limits.updated":
 					// これらのメッセージは無視
+				case "error":
+					if errorData, ok := msg["error"].(map[string]interface{}); ok {
+						log.Printf("OpenAI Realtime error: %v", errorData)
+						if code, ok := errorData["code"].(string); ok {
+							switch code {
+							case "input_audio_buffer_commit_empty":
+								log.Println("Audio buffer is empty - this may be due to audio format issues")
+							case "invalid_value":
+								log.Println("Invalid audio data format - check PCM16 encoding")
+							default:
+								log.Printf("Unknown error code: %s", code)
+							}
+						}
+					}
 				default:
 					log.Printf("Unhandled dialogue message type: %s", msgType)
 				}
@@ -374,6 +490,11 @@ func (h *HostAgent) run() {
 			if !h.dialogueMode {
 				h.generateAndSpeakScript()
 			}
+		case <-h.timerResetChan:
+			// LiveKitアップロード完了時にタイマーをリセット
+			log.Println("Resetting timer due to LiveKit upload completion")
+			ticker.Stop()
+			ticker = time.NewTicker(30 * time.Second)
 		}
 	}
 }
@@ -509,6 +630,33 @@ func (h *HostAgent) publishAudioToLiveKit(audioData string) {
 	}
 
 	log.Printf("Audio data published via PCMWriter successfully")
+
+	// LiveKitアップロード完了を通知（タイマーリセット用）
+	select {
+	case h.timerResetChan <- struct{}{}:
+		log.Println("Timer reset signal sent - next script will be generated 30s after this upload")
+	default:
+		log.Println("Timer reset channel full, skipping signal")
+	}
+}
+
+// publishUserAudioToLiveKit ユーザー音声をLiveKitに送信
+func (h *HostAgent) publishUserAudioToLiveKit(audioData string) {
+	if h.userPcmWriter == nil {
+		log.Println("User PCM writer not initialized, skipping user audio publish")
+		return
+	}
+
+	log.Printf("publishUserAudioToLiveKit called with data length: %d", len(audioData))
+
+	// ユーザー音声用PCMWriterを使用してBase64デルタデータを処理
+	log.Printf("Processing user audio data via PCMWriter, calling WriteB64Delta...")
+	if err := h.userPcmWriter.WriteB64Delta(audioData); err != nil {
+		log.Printf("Failed to write user audio delta: %v", err)
+		return
+	}
+
+	log.Printf("User audio data published via PCMWriter successfully")
 }
 
 // generateScript OpenAI APIを使用して台本を生成
@@ -705,7 +853,7 @@ func (h *HostAgent) startHTTPServer() {
 		log.Printf("Received script generation request: topic=%s, style=%s", req.Topic, req.Style)
 
 		// プロンプトを作成
-		prompt := fmt.Sprintf("%s トピック「%s」について、ラジオDJとして30秒程度の内容を話してください。", h.currentPrompt, req.Topic)
+		prompt := fmt.Sprintf("%s トピック「%s」について、ラジオDJとして20秒程度の内容を話してください。", h.currentPrompt, req.Topic)
 		if req.Style != "" {
 			prompt += fmt.Sprintf(" スタイル: %s", req.Style)
 		}
@@ -770,18 +918,43 @@ func (h *HostAgent) startHTTPServer() {
 
 		log.Printf("Received audio input: %d bytes", len(req.Audio))
 
+		// Base64デコードして実際のバイト数を確認
+		if decoded, err := base64.StdEncoding.DecodeString(req.Audio); err == nil {
+			log.Printf("Decoded audio data: %d bytes (PCM16 samples: %d)", len(decoded), len(decoded)/2)
+			// 24kHzで100ms = 2400サンプル = 4800バイト
+			durationMs := float64(len(decoded)/2) / 24000.0 * 1000.0
+			log.Printf("Audio duration: %.2f ms", durationMs)
+
+			// 25ms未満の場合は警告
+			if durationMs < 25.0 {
+				log.Printf("WARNING: Audio duration (%.2f ms) is less than 25ms, may cause buffer commit errors", durationMs)
+			}
+		} else {
+			log.Printf("Failed to decode base64 audio data: %v", err)
+		}
+
 		// OpenAI Realtimeに音声データを送信
 		if h.dialogueConn != nil {
 			audioMessage := map[string]interface{}{
 				"type":  "input_audio_buffer.append",
 				"audio": req.Audio,
 			}
+
+			log.Printf("Sending audio to OpenAI Realtime: %d bytes, base64 length: %d", len(req.Audio), len(req.Audio))
+
 			if err := h.dialogueConn.WriteJSON(audioMessage); err != nil {
 				log.Printf("Failed to send audio to OpenAI: %v", err)
 				http.Error(w, "Failed to send audio", http.StatusInternalServerError)
 				return
 			}
+
+			log.Printf("Audio data sent successfully to OpenAI Realtime")
+		} else {
+			log.Printf("Dialogue connection is nil, cannot send audio")
 		}
+
+		// ユーザー音声をLiveKitに送信
+		h.publishUserAudioToLiveKit(req.Audio)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
@@ -932,6 +1105,26 @@ func (h *HostAgent) startDialogueMode(requestID string) {
 
 	// 現在のTTSを停止（必要に応じて）
 	log.Println("Stopping current TTS for dialogue mode")
+	h.stopCurrentAudio()
+
+	// 音声バッファをクリア
+	if h.pcmWriter != nil {
+		h.pcmWriter.ClearBuffer()
+	}
+
+	// 新しい音声トラックを作成（対話モード用）
+	if err := h.createNewAudioTrack(); err != nil {
+		log.Printf("Failed to create new audio track: %v", err)
+		h.dialogueMode = false
+		return
+	}
+
+	// ユーザー音声トラックを作成
+	if err := h.createUserAudioTrack(); err != nil {
+		log.Printf("Failed to create user audio track: %v", err)
+		h.dialogueMode = false
+		return
+	}
 
 	// OpenAI Realtime接続を開始
 	if err := h.connectToOpenAIRealtime(); err != nil {
@@ -958,6 +1151,19 @@ func (h *HostAgent) endDialogueMode() {
 	if h.dialogueConn != nil {
 		h.dialogueConn.Close()
 		h.dialogueConn = nil
+	}
+
+	// 対話モード用の音声トラックを停止
+	h.stopCurrentAudio()
+
+	// ユーザー音声トラックを停止
+	h.stopUserAudio()
+
+	// 通常のラジオ放送用の音声トラックを作成
+	if err := h.createNewAudioTrack(); err != nil {
+		log.Printf("Failed to create normal audio track: %v", err)
+	} else {
+		log.Println("Normal audio track created")
 	}
 
 	// 通常のラジオ放送を再開
@@ -1020,6 +1226,106 @@ func (h *HostAgent) dequeueDialogueRequest(requestID string) {
 	defer resp.Body.Close()
 
 	log.Printf("Dialogue request dequeued: %s", requestID)
+}
+
+// stopCurrentAudio 現在の音声トラックを停止・削除
+func (h *HostAgent) stopCurrentAudio() {
+	if h.audioPublication != nil {
+		log.Println("Stopping and unpublishing current audio track")
+
+		// トラックを停止
+		if h.pcmTrack != nil {
+			h.pcmTrack.Close()
+		}
+
+		// トラックをアンパブリッシュ
+		err := h.room.LocalParticipant.UnpublishTrack(h.audioPublication.SID())
+		if err != nil {
+			log.Printf("Failed to unpublish track: %v", err)
+		} else {
+			log.Println("Audio track unpublished successfully")
+		}
+
+		h.audioPublication = nil
+		h.pcmTrack = nil
+		h.pcmWriter = nil
+	}
+}
+
+// stopUserAudio ユーザー音声トラックを停止
+func (h *HostAgent) stopUserAudio() {
+	if h.userAudioPublication != nil {
+		log.Println("Stopping and unpublishing user audio track")
+
+		// ユーザートラックを停止
+		if h.userPcmTrack != nil {
+			h.userPcmTrack.Close()
+		}
+
+		// ユーザートラックをアンパブリッシュ
+		err := h.room.LocalParticipant.UnpublishTrack(h.userAudioPublication.SID())
+		if err != nil {
+			log.Printf("Failed to unpublish user track: %v", err)
+		} else {
+			log.Println("User audio track unpublished successfully")
+		}
+
+		h.userAudioPublication = nil
+		h.userPcmTrack = nil
+		h.userPcmWriter = nil
+	}
+}
+
+// createNewAudioTrack 新しい音声トラックを作成
+func (h *HostAgent) createNewAudioTrack() error {
+	log.Println("Creating new audio track for dialogue mode")
+
+	// 新しいPCMオーディオトラックを作成
+	var err error
+	h.pcmTrack, err = lkmedia.NewPCMLocalTrack(24000, 1, nil) // 24kHz, mono
+	if err != nil {
+		return fmt.Errorf("failed to create new PCM audio track: %w", err)
+	}
+
+	// PCMWriterを初期化
+	h.pcmWriter = NewPCMWriter(h.pcmTrack)
+
+	// 新しいトラックをルームに公開
+	h.audioPublication, err = h.room.LocalParticipant.PublishTrack(h.pcmTrack, &lksdk.TrackPublicationOptions{
+		Name: "radio-24-host-dialogue",
+	})
+	if err != nil {
+		return fmt.Errorf("failed to publish new track: %w", err)
+	}
+
+	log.Println("New audio track created and published successfully")
+	return nil
+}
+
+// createUserAudioTrack ユーザー音声用のトラックを作成
+func (h *HostAgent) createUserAudioTrack() error {
+	log.Println("Creating user audio track")
+
+	// ユーザー音声用のPCMオーディオトラックを作成
+	var err error
+	h.userPcmTrack, err = lkmedia.NewPCMLocalTrack(24000, 1, nil) // 24kHz, mono
+	if err != nil {
+		return fmt.Errorf("failed to create user PCM audio track: %w", err)
+	}
+
+	// ユーザー音声用PCMWriterを初期化
+	h.userPcmWriter = NewPCMWriter(h.userPcmTrack)
+
+	// ユーザー音声トラックをルームに公開
+	h.userAudioPublication, err = h.room.LocalParticipant.PublishTrack(h.userPcmTrack, &lksdk.TrackPublicationOptions{
+		Name: "radio-24-user-input",
+	})
+	if err != nil {
+		return fmt.Errorf("failed to publish user track: %w", err)
+	}
+
+	log.Println("User audio track created and published successfully")
+	return nil
 }
 
 func getEnv(key, defaultValue string) string {

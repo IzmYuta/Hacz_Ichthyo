@@ -13,6 +13,9 @@ export default function OnAir() {
   const [broadcastWs, setBroadcastWs] = useState<WebSocket | null>(null);
   const [dialogueRequested, setDialogueRequested] = useState(false);
   const [dialogueActive, setDialogueActive] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const roomRef = useRef<Room | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
 
@@ -224,13 +227,13 @@ export default function OnAir() {
             onMouseDown={startPTT} 
             onMouseUp={stopPTT} 
             disabled={!connected}
-            colorScheme={dialogueActive ? "yellow" : "green"}
+            colorScheme={isRecording ? "red" : dialogueActive ? "yellow" : "green"}
             size="lg"
-            bg={dialogueActive ? "yellow.500" : "green.500"}
-            _hover={{ bg: dialogueActive ? "yellow.600" : "green.600" }}
+            bg={isRecording ? "red.500" : dialogueActive ? "yellow.500" : "green.500"}
+            _hover={{ bg: isRecording ? "red.600" : dialogueActive ? "yellow.600" : "green.600" }}
             _disabled={{ bg: "gray.500" }}
           >
-            🎙️ PTT {dialogueActive && "(対話中)"}
+            🎙️ PTT {isRecording ? "(録音中)" : dialogueActive ? "(対話中)" : ""}
           </Button>
 
           {!dialogueRequested && !dialogueActive ? (
@@ -321,7 +324,8 @@ export default function OnAir() {
               AI DJと対話できます。PTTボタンを押して話してください。
             </Text>
             <Text fontSize="sm" color="yellow.300">
-              💡 PTTボタンが黄色になっています。押し続けて話しかけてください。
+              💡 PTTボタンが{isRecording ? "赤色（録音中）" : "黄色（対話中）"}になっています。
+              {isRecording ? "話し終わったらボタンを離してください。" : "押し続けて話しかけてください。"}
             </Text>
           </Box>
         )}
@@ -331,33 +335,127 @@ export default function OnAir() {
     </Box>
   );
 
-  function startPTT() {
+  async function startPTT() {
     if (!ws) return;
     
     if (dialogueActive) {
-      // 対話モード中は音声入力を開始
-      const message = {
-        type: 'input_audio_buffer.append',
-        audio: '' // 実際の実装では音声データを送信
-      };
-      ws.send(JSON.stringify(message));
-      console.log('PTT started for dialogue - speaking to AI DJ');
+      // 対話モード中は音声録音を開始
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            sampleRate: 24000,
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true
+          } 
+        });
+        
+        const mediaRecorder = new MediaRecorder(stream, {
+          mimeType: 'audio/webm;codecs=opus',
+          audioBitsPerSecond: 64000 // より高品質な音声録音（32kbps → 64kbps）
+        });
+        
+        mediaRecorderRef.current = mediaRecorder;
+        audioChunksRef.current = [];
+        
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+          }
+        };
+        
+        // 録音開始（タイムスライスを削除して連続録音を有効化）
+        mediaRecorder.start(); // タイムスライスなしで連続録音
+        setIsRecording(true);
+        console.log('PTT started for dialogue - recording audio for AI DJ');
+      } catch (error) {
+        console.error('Failed to start audio recording:', error);
+        alert('マイクへのアクセスが拒否されました。ブラウザの設定を確認してください。');
+      }
     } else {
       // 通常のPTT
       console.log('PTT started - normal mode');
     }
   }
 
-  function stopPTT() {
+  async function stopPTT() {
     if (!ws) return;
     
-    if (dialogueActive) {
-      // 対話モード中は音声入力を終了
-      const message = {
-        type: 'input_audio_buffer.commit'
-      };
-      ws.send(JSON.stringify(message));
-      console.log('PTT stopped for dialogue - finished speaking to AI DJ');
+    if (dialogueActive && mediaRecorderRef.current && isRecording) {
+      // 対話モード中は音声録音を停止して送信
+      return new Promise<void>((resolve) => {
+        mediaRecorderRef.current!.onstop = async () => {
+          try {
+            const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+            
+            if (audioBlob.size > 0) {
+              // WebM音声をPCM16に変換（効率的な処理）
+              const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+              const audioContext = new AudioContextClass();
+              const arrayBuffer = await audioBlob.arrayBuffer();
+              const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+              
+              // モノラル、24kHz、PCM16に変換
+              const sampleRate = 24000;
+              const length = Math.floor(audioBuffer.length * sampleRate / audioBuffer.sampleRate);
+              const pcm16Data = new Int16Array(length);
+              
+              // 効率的なリサンプリングとPCM16変換
+              const sourceData = audioBuffer.getChannelData(0); // モノラル
+              const ratio = audioBuffer.sampleRate / sampleRate;
+              for (let i = 0; i < length; i++) {
+                const sourceIndex = Math.floor(i * ratio);
+                const sample = sourceData[sourceIndex] || 0;
+                pcm16Data[i] = Math.round(sample * 32767); // 簡素化された変換
+              }
+              
+              // 音声の長さをチェック（25ms = 600サンプル）
+              const durationMs = (pcm16Data.length / sampleRate) * 1000;
+              console.log(`Audio duration: ${durationMs.toFixed(2)} ms (${pcm16Data.length} samples)`);
+              
+              if (durationMs < 25) {
+                console.log('Audio too short (< 25ms), skipping send to avoid buffer errors');
+                return;
+              }
+              
+              // Base64エンコード
+              const base64Audio = btoa(String.fromCharCode(...new Uint8Array(pcm16Data.buffer)));
+              
+              const message = {
+                type: 'input_audio_buffer.append',
+                audio: base64Audio
+              };
+              ws.send(JSON.stringify(message));
+              
+              // 音声をコミット
+              const commitMessage = {
+                type: 'input_audio_buffer.commit'
+              };
+              ws.send(JSON.stringify(commitMessage));
+              
+              console.log(`PTT stopped for dialogue - audio sent to AI DJ (${pcm16Data.length} samples, ${durationMs.toFixed(2)}ms, ${(audioBlob.size / 1024).toFixed(2)}KB, efficient mode)`);
+            } else {
+              console.log('No audio data recorded');
+            }
+            
+            // ストリームを停止
+            if (mediaRecorderRef.current && mediaRecorderRef.current.stream) {
+              mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+            }
+            
+            setIsRecording(false);
+            resolve();
+          } catch (error) {
+            console.error('Failed to process audio:', error);
+            setIsRecording(false);
+            resolve();
+          }
+        };
+        
+        if (mediaRecorderRef.current) {
+          mediaRecorderRef.current.stop();
+        }
+      });
     } else {
       // 通常のPTT
       console.log('PTT stopped - normal mode');
