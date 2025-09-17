@@ -53,7 +53,7 @@ steps:
         # Update API service with secret references
         gcloud run services update api --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/api:$_COMMIT_SHA \
           --set-secrets="POSTGRES_PASSWORD=postgres-password:latest,OPENAI_API_KEY=openai-api-key:latest,LIVEKIT_API_KEY=livekit-api-key:latest,LIVEKIT_API_SECRET=livekit-api-secret:latest,LIVEKIT_URL=livekit-url:latest,POSTGRES_HOST=postgres-host:latest,POSTGRES_PORT=postgres-port:latest,POSTGRES_USER=postgres-user:latest,POSTGRES_DB=postgres-db:latest" \
-          --set-env-vars="ALLOWED_ORIGIN=https://web-$PROJECT_NUMBER.asia-northeast1.run.app"
+          --set-env-vars="ALLOWED_ORIGIN=https://web-$PROJECT_NUMBER.asia-northeast1.run.app,HOST_BASE=https://host-$PROJECT_NUMBER.asia-northeast1.run.app"
         
         # Update Web service
         gcloud run services update web --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/web:$_COMMIT_SHA \
@@ -62,7 +62,8 @@ steps:
         
         # Update Host service with secret references
         gcloud run services update host --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/host:$_COMMIT_SHA \
-          --set-secrets="LIVEKIT_API_KEY=livekit-api-key:latest,LIVEKIT_API_SECRET=livekit-api-secret:latest,OPENAI_API_KEY=openai-api-key:latest,LIVEKIT_WS_URL=livekit-url:latest"
+          --set-secrets="LIVEKIT_API_KEY=livekit-api-key:latest,LIVEKIT_API_SECRET=livekit-api-secret:latest,OPENAI_API_KEY=openai-api-key:latest,LIVEKIT_WS_URL=livekit-url:latest" \
+          --set-env-vars="API_BASE=https://api-$PROJECT_NUMBER.asia-northeast1.run.app,HOST_BASE=https://host-$PROJECT_NUMBER.asia-northeast1.run.app"
         
         # LiveKit Cloud update not needed
     waitFor: ['push-api', 'push-web', 'push-host']

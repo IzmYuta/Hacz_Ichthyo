@@ -235,6 +235,10 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "ALLOWED_ORIGIN"
         value = "https://web-${data.google_project.current.number}.${var.region}.run.app"
       }
+      env {
+        name  = "HOST_BASE"
+        value = "https://host-${data.google_project.current.number}.${var.region}.run.app"
+      }
     }
 
     scaling {
@@ -353,6 +357,14 @@ resource "google_cloud_run_v2_service" "host" {
       env {
         name  = "OPENAI_REALTIME_VOICE"
         value = "marin"
+      }
+      env {
+        name  = "API_BASE"
+        value = "https://api-${data.google_project.current.number}.${var.region}.run.app"
+      }
+      env {
+        name  = "HOST_BASE"
+        value = "https://host-${data.google_project.current.number}.${var.region}.run.app"
       }
     }
 
