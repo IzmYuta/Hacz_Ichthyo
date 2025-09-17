@@ -57,7 +57,7 @@ resource "google_sql_database_instance" "main" {
 
   deletion_protection = false
 
-  depends_on = [google_project_service.apis]
+  depends_on = [google_project_service.apis, google_service_networking_connection.private_vpc_connection]
 }
 
 # Database
@@ -80,7 +80,7 @@ resource "google_redis_instance" "main" {
   memory_size_gb = 1
   region         = var.region
 
-  depends_on = [google_project_service.apis]
+  depends_on = [google_project_service.apis, google_service_networking_connection.private_vpc_connection]
 }
 
 # VPC Network
@@ -97,6 +97,22 @@ resource "google_compute_subnetwork" "main" {
   ip_cidr_range = "10.0.0.0/24"
   region        = var.region
   network       = google_compute_network.main.id
+}
+
+# Global Address for Service Networking
+resource "google_compute_global_address" "private_ip_address" {
+  name          = "radio24-private-ip"
+  purpose       = "VPC_PEERING"
+  address_type  = "INTERNAL"
+  prefix_length = 16
+  network       = google_compute_network.main.id
+}
+
+# Service Networking Connection
+resource "google_service_networking_connection" "private_vpc_connection" {
+  network                 = google_compute_network.main.id
+  service                 = "servicenetworking.googleapis.com"
+  reserved_peering_ranges = [google_compute_global_address.private_ip_address.name]
 }
 
 # VPC Connector for Cloud Run
@@ -207,7 +223,7 @@ resource "google_cloud_run_v2_service" "web" {
       image = "gcr.io/${var.project_id}/web:latest"
       
       ports {
-        container_port = 3000
+        container_port = 8080
       }
 
       resources {
