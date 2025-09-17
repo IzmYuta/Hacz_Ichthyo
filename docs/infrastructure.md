@@ -66,7 +66,10 @@ graph TB
   - 投稿の受付・管理
   - 番組進行の制御
   - LiveKitトークンの発行
-  - WebSocket接続の管理
+  - PTT WebSocket接続の管理
+  - Broadcast WebSocket接続の管理
+  - 対話状態管理
+  - キュー管理（優先度制御）
 
 ### 2. Host Service (Go)
 
@@ -79,6 +82,9 @@ graph TB
   - 24時間連続音声生成・配信
   - LiveKitへの音声配信（Publish）
   - PCM音声処理・音量調整
+  - 対話モード（OpenAI Realtime API）
+  - 音声ミキシング（ホスト音声 + ユーザー音声）
+  - キュー監視・対話リクエスト処理
   - テストモード対応（OpenAI接続失敗時）
   - 自動再接続機能
 
@@ -104,9 +110,12 @@ graph TB
   - ユーザーインターフェース
   - LiveKit接続（Subscribe Only）
   - PTT (Push-to-Talk) 機能
+  - 対話モード（AI DJとのリアルタイム対話）
+  - 音声録音・送信（WebM→PCM16変換）
   - 投稿・コメント機能
   - 番組進行情報表示
   - テーマ切替UI
+  - リアルタイム音声処理
 
 ## データベース構成
 
@@ -134,6 +143,40 @@ CREATE TABLE submission (
 -- ベクトル検索用インデックス
 CREATE INDEX submission_embed_hnsw ON submission 
 USING hnsw (embed vector_cosine_ops);
+
+-- チャンネル管理
+CREATE TABLE channel (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL UNIQUE,
+    live BOOLEAN DEFAULT true,
+    started_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- スケジュール管理
+CREATE TABLE schedule (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    channel_id UUID REFERENCES channel(id) ON DELETE CASCADE,
+    hour INTEGER CHECK (hour >= 0 AND hour <= 23),
+    block TEXT CHECK (block IN ('OP', 'NEWS', 'QANDA', 'MUSIC', 'TOPIC_A', 'JINGLE')) NOT NULL,
+    prompt TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- キュー管理
+CREATE TABLE queue (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT,
+    kind TEXT CHECK (kind IN ('audio', 'text', 'phone')) NOT NULL,
+    text TEXT,
+    meta JSONB,
+    enqueued_at TIMESTAMPTZ DEFAULT now(),
+    status TEXT CHECK (status IN ('queued', 'live', 'done', 'dropped')) DEFAULT 'queued'
+);
+
+-- インデックス
+CREATE INDEX idx_schedule_channel_hour ON schedule(channel_id, hour);
+CREATE INDEX idx_queue_status_enqueued ON queue(status, enqueued_at);
+CREATE INDEX idx_queue_meta_priority ON queue USING GIN (meta);
 ```
 
 ### Redis

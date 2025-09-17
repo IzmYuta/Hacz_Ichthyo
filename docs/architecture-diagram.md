@@ -122,10 +122,12 @@ graph LR
     subgraph "API Service"
         A1[HTTP API]
         A2[PTT WebSocket]
-        A3[Database Client]
-        A4[Redis Client]
-        A5[LiveKit Client]
-        A6[Queue Manager]
+        A3[Broadcast WebSocket]
+        A4[Database Client]
+        A5[Redis Client]
+        A6[LiveKit Client]
+        A7[Queue Manager]
+        A8[Dialogue State Manager]
     end
     
     subgraph "Host Service"
@@ -136,6 +138,10 @@ graph LR
         H5[PCM Writer]
         H6[Topic Manager]
         H7[HTTP API Server]
+        H8[OpenAI Realtime Client]
+        H9[Queue Monitor]
+        H10[Dialogue Manager]
+        H11[Audio Mixer]
     end
     
     subgraph "LiveKit Service"
@@ -150,15 +156,20 @@ graph LR
         W2[LiveKit Client]
         W3[PTT Handler]
         W4[Subscribe Only]
+        W5[Dialogue Mode]
+        W6[Audio Recorder]
+        W7[WebSocket Client]
     end
     
     %% API Service connections
-    A1 --> A3
     A1 --> A4
-    A2 --> A4
-    A2 --> A6
-    A5 --> L1
-    A6 --> A4
+    A1 --> A5
+    A2 --> A5
+    A2 --> A7
+    A3 --> A5
+    A3 --> A8
+    A6 --> L1
+    A7 --> A5
     
     %% Host Service connections
     H6 --> H1
@@ -168,6 +179,10 @@ graph LR
     H5 --> H3
     H7 --> H1
     H7 --> H2
+    H8 --> H10
+    H9 --> H7
+    H10 --> H11
+    H11 --> H3
     
     %% LiveKit Service connections
     L1 --> L2
@@ -177,14 +192,22 @@ graph LR
     %% Web Service connections
     W1 --> W2
     W1 --> W3
+    W1 --> W5
+    W1 --> W6
+    W1 --> W7
     W3 --> A2
+    W5 --> A2
+    W6 --> A2
+    W7 --> A2
+    W7 --> A3
     W2 --> L1
     W4 --> W2
     
     %% Inter-service connections
     H3 --> L1
     W2 --> L1
-    A6 --> H7
+    A7 --> H9
+    A8 --> H10
 ```
 
 このアーキテクチャ図により、24時間AIラジオシステムの全体像と各コンポーネント間の関係を視覚的に理解できます。
