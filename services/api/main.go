@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -18,7 +19,6 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/radio24/api/internal/livekit"
 	"github.com/radio24/api/pkg/broadcast"
-	directorclient "github.com/radio24/api/pkg/director-client"
 	"github.com/radio24/api/pkg/queue"
 )
 
@@ -41,9 +41,20 @@ type Theme struct {
 
 var db *sql.DB
 var tokenGenerator *livekit.TokenGenerator
-var directorClient *directorclient.DirectorClient
 var pttQueue *queue.Queue
 var broadcastHub *broadcast.Hub
+var dialogueConnections map[string]*websocket.Conn
+
+// DialogueState 対話モードの状態管理
+type DialogueState struct {
+	Active       bool
+	ClientID     string
+	StartedAt    time.Time
+	LastActivity time.Time
+}
+
+var dialogueState *DialogueState
+var dialogueMutex sync.RWMutex
 
 func main() {
 	// 環境変数読み込み（リポジトリルートの.envファイル）
@@ -95,11 +106,11 @@ func main() {
 	broadcastHub = broadcast.NewHub()
 	go broadcastHub.Run()
 
-	// Director Client初期化
-	directorClient = directorclient.NewDirectorClient()
-
 	// PTT Queue初期化
 	pttQueue = queue.NewQueue()
+
+	// 対話接続管理初期化
+	dialogueConnections = make(map[string]*websocket.Conn)
 
 	// ルーター設定
 	r := chi.NewRouter()
@@ -107,16 +118,21 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(corsMiddleware())
 
+	// 対話モードのタイムアウトチェックを開始
+	go checkDialogueTimeout()
+
 	// ルート
 	r.Get("/health", handleHealth)
-	r.Get("/v1/now", handleNow)
-	r.Post("/v1/admin/advance", handleAdvance)
 	r.Get("/ws/ptt", handlePTTWebSocket)
 	r.Get("/ws/broadcast", handleBroadcastWebSocket)
 	r.Post("/v1/realtime/ephemeral", handleEphemeral)
 	r.Post("/v1/room/join", handleRoomJoin)
 	r.Post("/v1/submission", handleSubmission)
 	r.Post("/v1/theme/rotate", handleThemeRotate)
+	r.Get("/v1/queue/peek", handleQueuePeek)
+	r.Post("/v1/queue/dequeue", handleQueueDequeue)
+	r.Post("/v1/broadcast", handleBroadcastMessage)
+	r.Get("/v1/dialogue/status", handleDialogueStatus)
 
 	port := getEnv("PORT", "8080")
 	log.Printf("Server starting on port %s", port)
@@ -161,43 +177,15 @@ func handleRoomJoin(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func handleNow(w http.ResponseWriter, r *http.Request) {
-	nowPlaying, err := directorClient.GetNowPlaying()
-	if err != nil {
-		log.Printf("Failed to get now playing from director: %v", err)
-		http.Error(w, "Failed to get program info", http.StatusInternalServerError)
-		return
-	}
-
-	// リスナー数を更新
-	nowPlaying.Listeners = broadcastHub.GetClientCount()
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(nowPlaying)
-}
-
-func handleAdvance(w http.ResponseWriter, r *http.Request) {
-	nowPlaying, err := directorClient.AdvanceSegment()
-	if err != nil {
-		log.Printf("Failed to advance segment: %v", err)
-		http.Error(w, "Failed to advance segment", http.StatusInternalServerError)
-		return
-	}
-
-	// リスナー数を更新
-	nowPlaying.Listeners = broadcastHub.GetClientCount()
-
-	// 全クライアントに状態変更を配信
-	broadcastHub.Broadcast("program_update", nowPlaying)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(nowPlaying)
-}
-
 type PTTMessage struct {
 	Type string `json:"type"`
 	Kind string `json:"kind"`
 	Text string `json:"text,omitempty"`
+}
+
+type DialogueRequest struct {
+	Type string `json:"type"`
+	Kind string `json:"kind"`
 }
 
 var upgrader = websocket.Upgrader{
@@ -212,33 +200,56 @@ func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.Printf("WebSocket upgrade failed: %v", err)
 		return
 	}
-	defer conn.Close()
+	defer func() {
+		// 切断時に対話モードを終了
+		dialogueMutex.Lock()
+		if dialogueState != nil && dialogueState.Active {
+			log.Println("Client disconnected during dialogue - ending dialogue mode")
+			dialogueState = nil
+			dialogueMutex.Unlock()
+
+			// 他のクライアントに対話終了を通知
+			broadcastHub.Broadcast("dialogue_ended", map[string]interface{}{
+				"reason": "client_disconnected",
+			})
+		} else {
+			dialogueMutex.Unlock()
+		}
+		conn.Close()
+	}()
 
 	log.Println("PTT WebSocket connected")
 
 	for {
-		var msg PTTMessage
+		var msg map[string]interface{}
 		err := conn.ReadJSON(&msg)
 		if err != nil {
 			log.Printf("WebSocket read error: %v", err)
 			break
 		}
 
-		if msg.Type == "ptt" {
+		msgType, ok := msg["type"].(string)
+		if !ok {
+			log.Printf("Invalid message type")
+			continue
+		}
+
+		switch msgType {
+		case "ptt":
 			// PTTアイテムをキューに追加
+			kind, _ := msg["kind"].(string)
+			text, _ := msg["text"].(string)
+
 			item := queue.PTTItem{
 				ID:       fmt.Sprintf("ptt_%d", time.Now().UnixNano()),
 				UserID:   "anonymous", // 実際の実装では認証から取得
-				Kind:     queue.PTTKind(msg.Kind),
-				Text:     msg.Text,
+				Kind:     queue.PTTKind(kind),
+				Text:     text,
 				Priority: 0, // デフォルト優先度
 			}
 
 			pttQueue.Enqueue(item)
-			log.Printf("PTT enqueued: %s", msg.Text)
-
-			// Directorにキュー情報を更新
-			updateDirectorQueueInfo()
+			log.Printf("PTT enqueued: %s", text)
 
 			// クライアントに確認応答
 			response := map[string]interface{}{
@@ -246,6 +257,68 @@ func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
 				"id":   item.ID,
 			}
 			conn.WriteJSON(response)
+
+		case "dialogue_request":
+			// 対話リクエストをキューに追加
+			kind, _ := msg["kind"].(string)
+
+			item := queue.PTTItem{
+				ID:       fmt.Sprintf("dialogue_%d", time.Now().UnixNano()),
+				UserID:   "anonymous", // 実際の実装では認証から取得
+				Kind:     queue.PTTKind(kind),
+				Text:     "対話リクエスト",
+				Priority: 10, // 対話リクエストは高優先度
+			}
+
+			pttQueue.Enqueue(item)
+			log.Printf("Dialogue request enqueued: %s", item.ID)
+
+			// クライアントに確認応答
+			response := map[string]interface{}{
+				"type": "dialogue_queued",
+				"id":   item.ID,
+			}
+			conn.WriteJSON(response)
+
+		case "dialogue_end":
+			// 対話終了リクエスト
+			log.Printf("Dialogue end request received")
+
+			// 対話状態をクリア
+			dialogueMutex.Lock()
+			dialogueState = nil
+			dialogueMutex.Unlock()
+
+			// hostエージェントに対話終了を通知
+			endDialogueMode()
+
+			// クライアントに確認応答
+			response := map[string]interface{}{
+				"type": "dialogue_end_ack",
+			}
+			conn.WriteJSON(response)
+
+		case "input_audio_buffer.append":
+			// 対話モード中の音声入力
+			audio, _ := msg["audio"].(string)
+			log.Printf("Received audio input for dialogue: %d bytes", len(audio))
+
+			// 対話状態の最終アクティビティを更新
+			dialogueMutex.Lock()
+			if dialogueState != nil {
+				dialogueState.LastActivity = time.Now()
+			}
+			dialogueMutex.Unlock()
+
+			// OpenAI Realtimeに音声データを転送
+			forwardAudioToOpenAI(audio)
+
+		case "input_audio_buffer.commit":
+			// 音声入力のコミット
+			log.Printf("Audio input committed for dialogue")
+
+			// OpenAI Realtimeにコミット信号を送信
+			commitAudioToOpenAI()
 		}
 	}
 }
@@ -564,6 +637,154 @@ func getSimilarSubmissions(queryEmbedding string, limit int) ([]map[string]inter
 	return recommendations, nil
 }
 
+func handleQueuePeek(w http.ResponseWriter, r *http.Request) {
+	item := pttQueue.Peek()
+
+	w.Header().Set("Content-Type", "application/json")
+	if item != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"item": item,
+		})
+	} else {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"item": nil,
+		})
+	}
+}
+
+func handleQueueDequeue(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// キューからアイテムを削除
+	removed := pttQueue.Remove(req.ID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"removed": removed,
+		"id":      req.ID,
+	})
+}
+
+func handleBroadcastMessage(w http.ResponseWriter, r *http.Request) {
+	var msg map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	msgType := msg["type"].(string)
+	log.Printf("Broadcasting message: %s", msgType)
+
+	// 対話開始メッセージの場合は状態を更新
+	if msgType == "dialogue_ready" {
+		clientID := "anonymous" // 実際の実装では認証から取得
+		startDialogueMode(clientID)
+	}
+
+	// Broadcast Hubにメッセージを送信
+	broadcastHub.Broadcast(msgType, msg)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "broadcasted",
+	})
+}
+
+// forwardAudioToOpenAI OpenAI Realtimeに音声データを転送
+func forwardAudioToOpenAI(audioData string) {
+	// 実際の実装では、hostエージェントのOpenAI Realtime接続に音声データを転送
+	// ここでは簡略化のため、hostエージェントにHTTPリクエストで通知
+	apiBase := getEnv("HOST_BASE", "http://host:8080")
+
+	payload := map[string]interface{}{
+		"type":  "audio_input",
+		"audio": audioData,
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	// HTTPクライアントにタイムアウトを設定
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Post(apiBase+"/audio/input", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Failed to forward audio to OpenAI: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Audio forwarded to OpenAI Realtime")
+}
+
+// commitAudioToOpenAI OpenAI Realtimeに音声コミット信号を送信
+func commitAudioToOpenAI() {
+	// 実際の実装では、hostエージェントのOpenAI Realtime接続にコミット信号を転送
+	apiBase := getEnv("HOST_BASE", "http://host:8080")
+
+	payload := map[string]interface{}{
+		"type": "audio_commit",
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	// HTTPクライアントにタイムアウトを設定
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Post(apiBase+"/audio/commit", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Failed to commit audio to OpenAI: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Audio commit signal sent to OpenAI Realtime")
+}
+
+// endDialogueMode 対話モードを終了し、hostエージェントに通知
+func endDialogueMode() {
+	// 対話状態をクリア
+	dialogueMutex.Lock()
+	if dialogueState != nil {
+		log.Printf("Dialogue mode ended for client: %s", dialogueState.ClientID)
+		dialogueState = nil
+	}
+	dialogueMutex.Unlock()
+
+	// hostエージェントに対話終了を通知
+	apiBase := getEnv("HOST_BASE", "http://host:8080")
+
+	payload := map[string]interface{}{
+		"type": "end_dialogue",
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	// HTTPクライアントにタイムアウトを設定
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Post(apiBase+"/dialogue/end", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Failed to notify host agent to end dialogue: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Dialogue end notification sent to host agent")
+}
+
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -571,32 +792,58 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-func updateDirectorQueueInfo() {
-	if directorClient == nil || pttQueue == nil {
-		return
+// handleDialogueStatus 対話状態確認エンドポイント
+func handleDialogueStatus(w http.ResponseWriter, r *http.Request) {
+	dialogueMutex.RLock()
+	active := dialogueState != nil && dialogueState.Active
+	requested := false // 必要に応じて実装
+	dialogueMutex.RUnlock()
+
+	status := map[string]interface{}{
+		"active":    active,
+		"requested": requested,
 	}
 
-	// キューから上位3件を取得
-	topItems := pttQueue.GetTopN(3)
-	topTexts := make([]string, len(topItems))
-	for i, item := range topItems {
-		if item.Text != "" {
-			topTexts[i] = item.Text
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
+}
+
+// checkDialogueTimeout 対話モードのタイムアウト処理
+func checkDialogueTimeout() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		dialogueMutex.Lock()
+		if dialogueState != nil && dialogueState.Active {
+			if time.Since(dialogueState.LastActivity) > 5*time.Minute {
+				log.Println("Dialogue mode timeout - ending dialogue")
+				dialogueState = nil
+				dialogueMutex.Unlock()
+
+				// 他のクライアントに対話終了を通知
+				broadcastHub.Broadcast("dialogue_ended", map[string]interface{}{
+					"reason": "timeout",
+				})
+			} else {
+				dialogueMutex.Unlock()
+			}
 		} else {
-			topTexts[i] = fmt.Sprintf("%s投稿", string(item.Kind))
+			dialogueMutex.Unlock()
 		}
 	}
+}
 
-	// Director Serviceにキュー情報を更新（将来実装）
-	// 現在は直接更新できないため、WebSocketで配信のみ
-	if broadcastHub != nil {
-		// 全クライアントにキュー更新を配信
-		nowPlaying, err := directorClient.GetNowPlaying()
-		if err == nil {
-			nowPlaying.QueueCount = pttQueue.Size()
-			nowPlaying.TopQueue = topTexts
-			nowPlaying.Listeners = broadcastHub.GetClientCount()
-			broadcastHub.Broadcast("queue_update", nowPlaying)
-		}
+// startDialogueMode 対話モードを開始
+func startDialogueMode(clientID string) {
+	dialogueMutex.Lock()
+	defer dialogueMutex.Unlock()
+
+	dialogueState = &DialogueState{
+		Active:       true,
+		ClientID:     clientID,
+		StartedAt:    time.Now(),
+		LastActivity: time.Now(),
 	}
+	log.Printf("Dialogue mode started for client: %s", clientID)
 }

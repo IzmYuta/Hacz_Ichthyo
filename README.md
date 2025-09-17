@@ -7,7 +7,7 @@
 ## アーキテクチャ（放送型）
 
 - **フロントエンド**: Next.js (React) - Subscribe Only
-- **バックエンド**: Go (API + Host Agent)
+- **バックエンド**: Go (API + Host Agent with Script Generation)
 - **リアルタイム通信**: LiveKit (WebRTC SFU)
 - **AI音声生成**: OpenAI Realtime API (単一セッション)
 - **データベース**: PostgreSQL + pgvector
@@ -18,8 +18,7 @@
 ## 主要機能
 
 - **24時間連続放送**: Host Agentが常時発話
-- **PTT投稿**: Push-to-Talk機能によるリスナー参加
-- **番組進行管理**: Program Directorによる自動進行
+- **自動台本生成**: Host Agentが独自に台本を生成してTTSで読み上げ
 - **音声配信**: LiveKitによる高品質音声ストリーミング
 - **ベクトル検索**: 投稿内容の類似検索
 

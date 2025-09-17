@@ -51,7 +51,7 @@ func (h *Hub) Run() {
 			h.mu.Lock()
 			h.clients[client] = true
 			h.mu.Unlock()
-			log.Printf("Client connected. Total clients: %d", len(h.clients))
+			log.Printf("Broadcast client connected (userID: %s). Total clients: %d", client.userID, len(h.clients))
 
 		case client := <-h.unregister:
 			h.mu.Lock()
@@ -60,7 +60,7 @@ func (h *Hub) Run() {
 				close(client.send)
 			}
 			h.mu.Unlock()
-			log.Printf("Client disconnected. Total clients: %d", len(h.clients))
+			log.Printf("Broadcast client disconnected (userID: %s). Total clients: %d", client.userID, len(h.clients))
 
 		case message := <-h.broadcast:
 			h.mu.RLock()
@@ -85,8 +85,11 @@ func (h *Hub) Broadcast(messageType string, data interface{}) {
 		Timestamp: time.Now(),
 	}
 
+	log.Printf("Broadcasting message type: %s to %d clients", messageType, len(h.clients))
+
 	select {
 	case h.broadcast <- message:
+		log.Printf("Message queued for broadcast: %s", messageType)
 	default:
 		log.Println("Broadcast channel full, dropping message")
 	}

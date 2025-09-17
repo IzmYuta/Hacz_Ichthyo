@@ -8,6 +8,11 @@ output "web_url" {
   value       = google_cloud_run_v2_service.web.uri
 }
 
+output "host_url" {
+  description = "URL of the Host service"
+  value       = google_cloud_run_v2_service.host.uri
+}
+
 # LiveKit Cloud URL is configured in terraform.tfvars
 
 output "database_connection_name" {

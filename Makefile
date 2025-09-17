@@ -197,8 +197,8 @@ docker-build: ## Dockerイメージをビルド
 	$(DOCKER_COMPOSE) build
 	@echo "✅ Dockerイメージのビルドが完了しました"
 
-.PHONY: docker-up
-docker-up: ## Docker Composeで全サービスを起動
+.PHONY: up
+up: ## Docker Composeで全サービスを起動
 	@echo "🐳 Docker Composeで全サービスを起動中..."
 	$(DOCKER_COMPOSE) up -d
 	@echo "✅ 全サービスが起動しました"
@@ -208,34 +208,22 @@ docker-up: ## Docker Composeで全サービスを起動
 	@echo "  APIサーバー: http://localhost:8080"
 	@echo "  データベース: localhost:5432"
 
-.PHONY: docker-down
-docker-down: ## Docker Composeで全サービスを停止
+.PHONY: down
+down: ## Docker Composeで全サービスを停止
 	@echo "🐳 Docker Composeで全サービスを停止中..."
 	$(DOCKER_COMPOSE) down
 	@echo "✅ 全サービスが停止しました"
 
-.PHONY: docker-restart
+.PHONY: restart
 docker-restart: ## Docker Composeで全サービスを再起動
 	@echo "🐳 Docker Composeで全サービスを再起動中..."
 	$(DOCKER_COMPOSE) restart
 	@echo "✅ 全サービスが再起動しました"
 
-.PHONY: docker-logs
-docker-logs: ## Docker Composeのログを表示
-	@echo "📋 Docker Composeログ:"
-	$(DOCKER_COMPOSE) logs -f
-
 .PHONY: docker-status
 docker-status: ## Docker Composeのサービス状態を確認
 	@echo "📊 Docker Composeサービス状態:"
 	$(DOCKER_COMPOSE) ps
-
-.PHONY: docker-clean
-docker-clean: ## Docker Composeのデータとボリュームを削除
-	@echo "🧹 Docker Composeのデータとボリュームを削除中..."
-	$(DOCKER_COMPOSE) down -v --remove-orphans
-	$(DOCKER) system prune -f
-	@echo "✅ Docker Composeのクリーンアップが完了しました"
 
 # =============================================================================
 # テスト
