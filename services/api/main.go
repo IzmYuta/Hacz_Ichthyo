@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -43,6 +44,17 @@ var tokenGenerator *livekit.TokenGenerator
 var pttQueue *queue.Queue
 var broadcastHub *broadcast.Hub
 var dialogueConnections map[string]*websocket.Conn
+
+// DialogueState 対話モードの状態管理
+type DialogueState struct {
+	Active       bool
+	ClientID     string
+	StartedAt    time.Time
+	LastActivity time.Time
+}
+
+var dialogueState *DialogueState
+var dialogueMutex sync.RWMutex
 
 func main() {
 	// 環境変数読み込み（リポジトリルートの.envファイル）
@@ -106,6 +118,9 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(corsMiddleware())
 
+	// 対話モードのタイムアウトチェックを開始
+	go checkDialogueTimeout()
+
 	// ルート
 	r.Get("/health", handleHealth)
 	r.Get("/ws/ptt", handlePTTWebSocket)
@@ -117,6 +132,7 @@ func main() {
 	r.Get("/v1/queue/peek", handleQueuePeek)
 	r.Post("/v1/queue/dequeue", handleQueueDequeue)
 	r.Post("/v1/broadcast", handleBroadcastMessage)
+	r.Get("/v1/dialogue/status", handleDialogueStatus)
 
 	port := getEnv("PORT", "8080")
 	log.Printf("Server starting on port %s", port)
@@ -184,7 +200,23 @@ func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.Printf("WebSocket upgrade failed: %v", err)
 		return
 	}
-	defer conn.Close()
+	defer func() {
+		// 切断時に対話モードを終了
+		dialogueMutex.Lock()
+		if dialogueState != nil && dialogueState.Active {
+			log.Println("Client disconnected during dialogue - ending dialogue mode")
+			dialogueState = nil
+			dialogueMutex.Unlock()
+
+			// 他のクライアントに対話終了を通知
+			broadcastHub.Broadcast("dialogue_ended", map[string]interface{}{
+				"reason": "client_disconnected",
+			})
+		} else {
+			dialogueMutex.Unlock()
+		}
+		conn.Close()
+	}()
 
 	log.Println("PTT WebSocket connected")
 
@@ -252,6 +284,11 @@ func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
 			// 対話終了リクエスト
 			log.Printf("Dialogue end request received")
 
+			// 対話状態をクリア
+			dialogueMutex.Lock()
+			dialogueState = nil
+			dialogueMutex.Unlock()
+
 			// hostエージェントに対話終了を通知
 			endDialogueMode()
 
@@ -265,6 +302,13 @@ func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
 			// 対話モード中の音声入力
 			audio, _ := msg["audio"].(string)
 			log.Printf("Received audio input for dialogue: %d bytes", len(audio))
+
+			// 対話状態の最終アクティビティを更新
+			dialogueMutex.Lock()
+			if dialogueState != nil {
+				dialogueState.LastActivity = time.Now()
+			}
+			dialogueMutex.Unlock()
 
 			// OpenAI Realtimeに音声データを転送
 			forwardAudioToOpenAI(audio)
@@ -638,6 +682,12 @@ func handleBroadcastMessage(w http.ResponseWriter, r *http.Request) {
 	msgType := msg["type"].(string)
 	log.Printf("Broadcasting message: %s", msgType)
 
+	// 対話開始メッセージの場合は状態を更新
+	if msgType == "dialogue_ready" {
+		clientID := "anonymous" // 実際の実装では認証から取得
+		startDialogueMode(clientID)
+	}
+
 	// Broadcast Hubにメッセージを送信
 	broadcastHub.Broadcast(msgType, msg)
 
@@ -701,8 +751,17 @@ func commitAudioToOpenAI() {
 	log.Printf("Audio commit signal sent to OpenAI Realtime")
 }
 
-// endDialogueMode hostエージェントに対話終了を通知
+// endDialogueMode 対話モードを終了し、hostエージェントに通知
 func endDialogueMode() {
+	// 対話状態をクリア
+	dialogueMutex.Lock()
+	if dialogueState != nil {
+		log.Printf("Dialogue mode ended for client: %s", dialogueState.ClientID)
+		dialogueState = nil
+	}
+	dialogueMutex.Unlock()
+
+	// hostエージェントに対話終了を通知
 	apiBase := getEnv("HOST_BASE", "http://host:8080")
 
 	payload := map[string]interface{}{
@@ -731,4 +790,60 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// handleDialogueStatus 対話状態確認エンドポイント
+func handleDialogueStatus(w http.ResponseWriter, r *http.Request) {
+	dialogueMutex.RLock()
+	active := dialogueState != nil && dialogueState.Active
+	requested := false // 必要に応じて実装
+	dialogueMutex.RUnlock()
+
+	status := map[string]interface{}{
+		"active":    active,
+		"requested": requested,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
+}
+
+// checkDialogueTimeout 対話モードのタイムアウト処理
+func checkDialogueTimeout() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		dialogueMutex.Lock()
+		if dialogueState != nil && dialogueState.Active {
+			if time.Since(dialogueState.LastActivity) > 5*time.Minute {
+				log.Println("Dialogue mode timeout - ending dialogue")
+				dialogueState = nil
+				dialogueMutex.Unlock()
+
+				// 他のクライアントに対話終了を通知
+				broadcastHub.Broadcast("dialogue_ended", map[string]interface{}{
+					"reason": "timeout",
+				})
+			} else {
+				dialogueMutex.Unlock()
+			}
+		} else {
+			dialogueMutex.Unlock()
+		}
+	}
+}
+
+// startDialogueMode 対話モードを開始
+func startDialogueMode(clientID string) {
+	dialogueMutex.Lock()
+	defer dialogueMutex.Unlock()
+
+	dialogueState = &DialogueState{
+		Active:       true,
+		ClientID:     clientID,
+		StartedAt:    time.Now(),
+		LastActivity: time.Now(),
+	}
+	log.Printf("Dialogue mode started for client: %s", clientID)
 }

@@ -41,6 +41,10 @@ type HostAgent struct {
 	userAudioPublication *lksdk.LocalTrackPublication
 	// タイマーリセット用チャンネル
 	timerResetChan chan struct{}
+	// 状態管理用
+	dialogueStateMutex sync.RWMutex
+	dialogueStartedAt  time.Time
+	lastActivity       time.Time
 }
 
 type PCMWriter struct {
@@ -416,11 +420,14 @@ func (h *HostAgent) handleDialogueMessages() {
 	for {
 		select {
 		case <-h.ctx.Done():
+			log.Println("Context cancelled, stopping dialogue message handling")
 			return
 		default:
 			var msg map[string]interface{}
 			if err := h.dialogueConn.ReadJSON(&msg); err != nil {
 				log.Printf("Dialogue connection error: %v", err)
+				// 接続切断時に対話モードを終了
+				log.Println("OpenAI Realtime connection lost, ending dialogue mode")
 				h.endDialogueMode()
 				return
 			}
@@ -434,6 +441,13 @@ func (h *HostAgent) handleDialogueMessages() {
 					if audioData, ok := msg["delta"].(string); ok {
 						log.Printf("Received dialogue audio delta, length: %d", len(audioData))
 						h.publishAudioToLiveKit(audioData)
+
+						// 音声出力時もアクティビティを更新
+						h.dialogueStateMutex.Lock()
+						if h.dialogueMode {
+							h.lastActivity = time.Now()
+						}
+						h.dialogueStateMutex.Unlock()
 					}
 				case "response.done":
 					log.Println("Dialogue response completed")
@@ -813,6 +827,13 @@ func (h *HostAgent) startHTTPServer() {
 
 		log.Printf("Received audio input: %d bytes", len(req.Audio))
 
+		// 対話モードのアクティビティを更新
+		h.dialogueStateMutex.Lock()
+		if h.dialogueMode {
+			h.lastActivity = time.Now()
+		}
+		h.dialogueStateMutex.Unlock()
+
 		// Base64デコードして実際のバイト数を確認
 		if decoded, err := base64.StdEncoding.DecodeString(req.Audio); err == nil {
 			log.Printf("Decoded audio data: %d bytes (PCM16 samples: %d)", len(decoded), len(decoded)/2)
@@ -900,6 +921,29 @@ func (h *HostAgent) startHTTPServer() {
 		json.NewEncoder(w).Encode(map[string]string{
 			"status": "dialogue_ended",
 		})
+	})
+
+	// 対話状態確認エンドポイント
+	http.HandleFunc("/dialogue/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		h.dialogueStateMutex.RLock()
+		active := h.dialogueMode
+		startedAt := h.dialogueStartedAt
+		lastActivity := h.lastActivity
+		h.dialogueStateMutex.RUnlock()
+
+		status := map[string]interface{}{
+			"active":        active,
+			"started_at":    startedAt.Format(time.RFC3339),
+			"last_activity": lastActivity.Format(time.RFC3339),
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(status)
 	})
 
 	log.Printf("Starting HTTP server on port %s", port)
@@ -991,12 +1035,18 @@ func (h *HostAgent) checkQueue() {
 
 // startDialogueMode 対話モードを開始
 func (h *HostAgent) startDialogueMode(requestID string) {
+	h.dialogueStateMutex.Lock()
+	defer h.dialogueStateMutex.Unlock()
+
 	if h.dialogueMode {
+		log.Printf("Dialogue mode already active, ignoring request: %s", requestID)
 		return // 既に対話モード中
 	}
 
 	log.Printf("Starting dialogue mode for request: %s", requestID)
 	h.dialogueMode = true
+	h.dialogueStartedAt = time.Now()
+	h.lastActivity = time.Now()
 
 	// 現在のTTSを停止（必要に応じて）
 	log.Println("Stopping current TTS for dialogue mode")
@@ -1035,7 +1085,11 @@ func (h *HostAgent) startDialogueMode(requestID string) {
 
 // endDialogueMode 対話モードを終了
 func (h *HostAgent) endDialogueMode() {
+	h.dialogueStateMutex.Lock()
+	defer h.dialogueStateMutex.Unlock()
+
 	if !h.dialogueMode {
+		log.Println("Dialogue mode not active, nothing to end")
 		return
 	}
 
@@ -1044,6 +1098,7 @@ func (h *HostAgent) endDialogueMode() {
 
 	// OpenAI Realtime接続を切断
 	if h.dialogueConn != nil {
+		log.Println("Closing OpenAI Realtime connection")
 		h.dialogueConn.Close()
 		h.dialogueConn = nil
 	}

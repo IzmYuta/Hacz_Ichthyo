@@ -28,6 +28,8 @@ export default function OnAir() {
     
     websocket.onopen = () => {
       console.log('PTT WebSocket connected');
+      // 接続時に現在の対話状態を確認
+      checkDialogueStatus();
     };
     
     websocket.onmessage = (event) => {
@@ -42,6 +44,20 @@ export default function OnAir() {
         setDialogueActive(false);
         setDialogueRequested(false);
       }
+    };
+    
+    websocket.onclose = (event) => {
+      console.log('PTT WebSocket closed:', event.code, event.reason);
+      // WebSocket切断時に状態をリセット
+      setDialogueActive(false);
+      setDialogueRequested(false);
+    };
+    
+    websocket.onerror = (error) => {
+      console.error('PTT WebSocket error:', error);
+      // エラー時も状態をリセット
+      setDialogueActive(false);
+      setDialogueRequested(false);
     };
     
     setWs(websocket);
@@ -75,6 +91,9 @@ export default function OnAir() {
     
     broadcastWebsocket.onclose = (event) => {
       console.log('Broadcast WebSocket closed:', event.code, event.reason);
+      // ブロードキャストWebSocket切断時も状態をリセット
+      setDialogueActive(false);
+      setDialogueRequested(false);
     };
     
     setBroadcastWs(broadcastWebsocket);
@@ -84,6 +103,57 @@ export default function OnAir() {
       broadcastWebsocket.close();
     };
   }, [API_BASE]);
+
+  // ページ離脱時のクリーンアップ処理
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (dialogueActive && ws && ws.readyState === WebSocket.OPEN) {
+        // 対話モード中なら終了リクエストを送信
+        const message = {
+          type: 'dialogue_end',
+          kind: 'dialogue'
+        };
+        ws.send(JSON.stringify(message));
+        console.log('Dialogue end request sent on page unload');
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && dialogueActive && ws && ws.readyState === WebSocket.OPEN) {
+        // ページが非表示になった時も対話を終了
+        const message = {
+          type: 'dialogue_end',
+          kind: 'dialogue'
+        };
+        ws.send(JSON.stringify(message));
+        console.log('Dialogue end request sent on visibility change');
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [dialogueActive, ws]);
+
+  // 対話状態確認関数
+  const checkDialogueStatus = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/v1/dialogue/status`);
+      const data = await response.json();
+      setDialogueActive(data.active || false);
+      setDialogueRequested(data.requested || false);
+      console.log('Dialogue status checked:', data);
+    } catch (error) {
+      console.error('Failed to check dialogue status:', error);
+      // エラー時は状態をリセット
+      setDialogueActive(false);
+      setDialogueRequested(false);
+    }
+  };
 
   async function connect() {
     try {
