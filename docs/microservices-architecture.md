@@ -14,28 +14,19 @@ Radio24プロジェクトをマイクロサービスアーキテクチャに移�
   - PTT WebSocket接続
   - 投稿キュー管理
   - WebSocket配信（Broadcast Hub）
-  - Director Serviceとの通信
-
-### 2. Director Service (Port: 8081) - **新規**
-
-- **責任**: 番組進行管理、スケジュール管理
-- **機能**:
-  - テーマ切替（毎正時）
-  - セグメント進行（15分刻み）
-  - データベーススケジュール管理
-  - MCP（外部情報取得）
   - Host Serviceとの通信
 
-### 3. Host Service (Port: 8082)
+### 2. Host Service (Port: 8082)
 
-- **責任**: AI Host Agent、音声配信
+- **責任**: AI Host Agent、台本生成、音声配信
 - **機能**:
-  - OpenAI Realtime API接続
+  - 台本自動生成（8つのトピックを循環）
+  - OpenAI Chat Completions API接続
+  - OpenAI TTS API接続
   - LiveKit音声配信
-  - Director Serviceからの指示受信
-  - プロンプト動的更新
+  - HTTP API（台本生成・即座発話）
 
-### 4. Web Service (Port: 3000)
+### 3. Web Service (Port: 3000)
 
 - **責任**: フロントエンド
 - **機能**:
@@ -55,7 +46,6 @@ graph TB
     
     subgraph "API Layer"
         API[API Service]
-        Director[Director Service]
     end
     
     subgraph "Core Services"
@@ -65,20 +55,15 @@ graph TB
     end
     
     subgraph "External Services"
-        OpenAI[OpenAI Realtime]
-        Weather[Weather API]
-        News[News API]
+        OpenAI[OpenAI API<br/>Chat Completions + TTS]
     end
     
     Web --> API
     Mobile --> API
-    API --> Director
-    Director --> Host
-    Director --> DB
+    API --> Host
+    API --> DB
     Host --> LiveKit
     Host --> OpenAI
-    Director --> Weather
-    Director --> News
 ```
 
 ## データベーススキーマ
@@ -123,20 +108,9 @@ CREATE TABLE queue (
 
 ## API エンドポイント
 
-### Director Service
-
-- `GET /health` - ヘルスチェック
-- `GET /v1/now` - 現在の番組情報
-- `POST /v1/admin/advance` - セグメント進行
-- `POST /v1/admin/theme` - テーマ変更
-- `POST /v1/admin/prompt` - プロンプト更新
-- `GET /v1/status` - サービス状態
-
 ### API Service
 
 - `GET /health` - ヘルスチェック
-- `GET /v1/now` - 現在の番組情報（Director経由）
-- `POST /v1/admin/advance` - セグメント進行（Director経由）
 - `GET /ws/ptt` - PTT WebSocket
 - `GET /ws/broadcast` - 配信WebSocket
 - `POST /v1/room/join` - LiveKit接続トークン
@@ -144,23 +118,10 @@ CREATE TABLE queue (
 ### Host Service
 
 - `GET /health` - ヘルスチェック
-- `POST /director/instruction` - Director指示受信
-- `POST /director/prompt` - プロンプト更新受信
+- `POST /script/generate` - 台本生成
+- `POST /speak` - 即座に発話
 
 ## 環境変数
-
-### Director Service
-
-```bash
-POSTGRES_HOST=db
-POSTGRES_PORT=5432
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
-POSTGRES_DB=radio24
-HOST_SERVICE_URL=http://host:8080
-OPENAI_API_KEY=your-key
-ALLOWED_ORIGIN=http://localhost:3000
-```
 
 ### API Service
 
@@ -170,7 +131,6 @@ POSTGRES_PORT=5432
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 POSTGRES_DB=radio24
-DIRECTOR_SERVICE_URL=http://director:8081
 LIVEKIT_API_KEY=devkey
 LIVEKIT_API_SECRET=secret
 OPENAI_API_KEY=your-key

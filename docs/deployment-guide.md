@@ -172,12 +172,13 @@ gcloud run deploy host \
   --image gcr.io/$PROJECT_ID/host:latest \
   --platform managed \
   --region $REGION \
-  --no-allow-unauthenticated \
+  --allow-unauthenticated \
   --port 8080 \
   --memory 1Gi \
   --cpu 1 \
+  --min-instances 1 \
   --max-instances 1 \
-  --set-env-vars "LIVEKIT_API_KEY=$LIVEKIT_API_KEY,LIVEKIT_API_SECRET=$LIVEKIT_API_SECRET,OPENAI_API_KEY=$OPENAI_API_KEY,LIVEKIT_WS_URL=$LIVEKIT_WS_URL"
+  --set-env-vars "LIVEKIT_API_KEY=$LIVEKIT_API_KEY,LIVEKIT_API_SECRET=$LIVEKIT_API_SECRET,OPENAI_API_KEY=$OPENAI_API_KEY,LIVEKIT_WS_URL=$LIVEKIT_WS_URL,OPENAI_REALTIME_MODEL=gpt-realtime,OPENAI_REALTIME_VOICE=marin"
 ```
 
 ### 4. LiveKitサービスのデプロイ

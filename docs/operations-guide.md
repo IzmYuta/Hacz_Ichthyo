@@ -44,8 +44,14 @@ gcloud monitoring metrics list --filter="resource.type=cloud_run_revision"
 # APIサービスのログ
 gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=api" --limit=100 --format="table(timestamp,severity,textPayload)"
 
-# Hostサービスのログ
+# Hostサービスのログ（台本生成・TTS）
 gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=host" --limit=100 --format="table(timestamp,severity,textPayload)"
+
+# Hostサービスの台本生成ログ
+gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=host AND textPayload:\"Generating script\"" --limit=50 --format="table(timestamp,textPayload)"
+
+# HostサービスのTTS生成ログ
+gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=host AND textPayload:\"TTS\"" --limit=50 --format="table(timestamp,textPayload)"
 
 # LiveKitサービスのログ
 gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=livekit" --limit=100 --format="table(timestamp,severity,textPayload)"
@@ -65,6 +71,12 @@ gcloud logging read "resource.type=cloud_run_revision AND textPayload:\"response
 
 # ユーザーアクティビティの確認
 gcloud logging read "resource.type=cloud_run_revision AND textPayload:\"user_action\"" --limit=100
+
+# Hostサービスの台本生成頻度確認
+gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=host AND textPayload:\"Generated script\"" --limit=100 | grep -c "Generated script"
+
+# HostサービスのTTS生成頻度確認
+gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=host AND textPayload:\"TTS audio generated\"" --limit=100 | grep -c "TTS audio generated"
 ```
 
 ### 3. パフォーマンス監視
