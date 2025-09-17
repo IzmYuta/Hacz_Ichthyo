@@ -48,13 +48,22 @@ jobs:
             -var="postgres_password=${{ secrets.POSTGRES_PASSWORD }}" \
             -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}" \
             -var="livekit_api_key=${{ secrets.LIVEKIT_API_KEY }}" \
-            -var="livekit_api_secret=${{ secrets.LIVEKIT_API_SECRET }}"
+            -var="livekit_api_secret=${{ secrets.LIVEKIT_API_SECRET }}" \
+            -var="livekit_url=${{ secrets.LIVEKIT_URL }}" \
+            -var="postgres_host=${{ secrets.POSTGRES_HOST }}" \
+            -var="postgres_port=${{ secrets.POSTGRES_PORT }}" \
+            -var="postgres_user=${{ secrets.POSTGRES_USER }}" \
+            -var="postgres_db=${{ secrets.POSTGRES_DB }}"
         env:
           TF_VAR_postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_livekit_api_key: ${{ secrets.LIVEKIT_API_KEY }}
           TF_VAR_livekit_api_secret: ${{ secrets.LIVEKIT_API_SECRET }}
-
+          TF_VAR_livekit_url: ${{ secrets.LIVEKIT_URL }}
+          TF_VAR_postgres_host: ${{ secrets.POSTGRES_HOST }}
+          TF_VAR_postgres_port: ${{ secrets.POSTGRES_PORT }}
+          TF_VAR_postgres_user: ${{ secrets.POSTGRES_USER }}
+          TF_VAR_postgres_db: ${{ secrets.POSTGRES_DB }}
   terraform-apply:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -90,13 +99,22 @@ jobs:
             -var="postgres_password=${{ secrets.POSTGRES_PASSWORD }}" \
             -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}" \
             -var="livekit_api_key=${{ secrets.LIVEKIT_API_KEY }}" \
-            -var="livekit_api_secret=${{ secrets.LIVEKIT_API_SECRET }}"
+            -var="livekit_api_secret=${{ secrets.LIVEKIT_API_SECRET }}" \
+            -var="livekit_url=${{ secrets.LIVEKIT_URL }}" \
+            -var="postgres_host=${{ secrets.POSTGRES_HOST }}" \
+            -var="postgres_port=${{ secrets.POSTGRES_PORT }}" \
+            -var="postgres_user=${{ secrets.POSTGRES_USER }}" \
+            -var="postgres_db=${{ secrets.POSTGRES_DB }}"
         env:
           TF_VAR_postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_livekit_api_key: ${{ secrets.LIVEKIT_API_KEY }}
           TF_VAR_livekit_api_secret: ${{ secrets.LIVEKIT_API_SECRET }}
-
+          TF_VAR_livekit_url: ${{ secrets.LIVEKIT_URL }}
+          TF_VAR_postgres_host: ${{ secrets.POSTGRES_HOST }}
+          TF_VAR_postgres_port: ${{ secrets.POSTGRES_PORT }}
+          TF_VAR_postgres_user: ${{ secrets.POSTGRES_USER }}
+          TF_VAR_postgres_db: ${{ secrets.POSTGRES_DB }}
       - name: Terraform Apply
         run: |
           cd terraform
@@ -104,13 +122,22 @@ jobs:
             -var="postgres_password=${{ secrets.POSTGRES_PASSWORD }}" \
             -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}" \
             -var="livekit_api_key=${{ secrets.LIVEKIT_API_KEY }}" \
-            -var="livekit_api_secret=${{ secrets.LIVEKIT_API_SECRET }}"
+            -var="livekit_api_secret=${{ secrets.LIVEKIT_API_SECRET }}" \
+            -var="livekit_url=${{ secrets.LIVEKIT_URL }}" \
+            -var="postgres_host=${{ secrets.POSTGRES_HOST }}" \
+            -var="postgres_port=${{ secrets.POSTGRES_PORT }}" \
+            -var="postgres_user=${{ secrets.POSTGRES_USER }}" \
+            -var="postgres_db=${{ secrets.POSTGRES_DB }}"
         env:
           TF_VAR_postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_livekit_api_key: ${{ secrets.LIVEKIT_API_KEY }}
           TF_VAR_livekit_api_secret: ${{ secrets.LIVEKIT_API_SECRET }}
-
+          TF_VAR_livekit_url: ${{ secrets.LIVEKIT_URL }}
+          TF_VAR_postgres_host: ${{ secrets.POSTGRES_HOST }}
+          TF_VAR_postgres_port: ${{ secrets.POSTGRES_PORT }}
+          TF_VAR_postgres_user: ${{ secrets.POSTGRES_USER }}
+          TF_VAR_postgres_db: ${{ secrets.POSTGRES_DB }}
       - name: Output service URLs
         run: |
           cd terraform
