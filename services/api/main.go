@@ -18,7 +18,6 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/radio24/api/internal/livekit"
 	"github.com/radio24/api/pkg/broadcast"
-	directorclient "github.com/radio24/api/pkg/director-client"
 	"github.com/radio24/api/pkg/queue"
 )
 
@@ -41,7 +40,6 @@ type Theme struct {
 
 var db *sql.DB
 var tokenGenerator *livekit.TokenGenerator
-var directorClient *directorclient.DirectorClient
 var pttQueue *queue.Queue
 var broadcastHub *broadcast.Hub
 
@@ -95,9 +93,6 @@ func main() {
 	broadcastHub = broadcast.NewHub()
 	go broadcastHub.Run()
 
-	// Director Client初期化
-	directorClient = directorclient.NewDirectorClient()
-
 	// PTT Queue初期化
 	pttQueue = queue.NewQueue()
 
@@ -109,8 +104,6 @@ func main() {
 
 	// ルート
 	r.Get("/health", handleHealth)
-	r.Get("/v1/now", handleNow)
-	r.Post("/v1/admin/advance", handleAdvance)
 	r.Get("/ws/ptt", handlePTTWebSocket)
 	r.Get("/ws/broadcast", handleBroadcastWebSocket)
 	r.Post("/v1/realtime/ephemeral", handleEphemeral)
@@ -161,39 +154,6 @@ func handleRoomJoin(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func handleNow(w http.ResponseWriter, r *http.Request) {
-	nowPlaying, err := directorClient.GetNowPlaying()
-	if err != nil {
-		log.Printf("Failed to get now playing from director: %v", err)
-		http.Error(w, "Failed to get program info", http.StatusInternalServerError)
-		return
-	}
-
-	// リスナー数を更新
-	nowPlaying.Listeners = broadcastHub.GetClientCount()
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(nowPlaying)
-}
-
-func handleAdvance(w http.ResponseWriter, r *http.Request) {
-	nowPlaying, err := directorClient.AdvanceSegment()
-	if err != nil {
-		log.Printf("Failed to advance segment: %v", err)
-		http.Error(w, "Failed to advance segment", http.StatusInternalServerError)
-		return
-	}
-
-	// リスナー数を更新
-	nowPlaying.Listeners = broadcastHub.GetClientCount()
-
-	// 全クライアントに状態変更を配信
-	broadcastHub.Broadcast("program_update", nowPlaying)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(nowPlaying)
-}
-
 type PTTMessage struct {
 	Type string `json:"type"`
 	Kind string `json:"kind"`
@@ -236,9 +196,6 @@ func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			pttQueue.Enqueue(item)
 			log.Printf("PTT enqueued: %s", msg.Text)
-
-			// Directorにキュー情報を更新
-			updateDirectorQueueInfo()
 
 			// クライアントに確認応答
 			response := map[string]interface{}{
@@ -569,34 +526,4 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
-}
-
-func updateDirectorQueueInfo() {
-	if directorClient == nil || pttQueue == nil {
-		return
-	}
-
-	// キューから上位3件を取得
-	topItems := pttQueue.GetTopN(3)
-	topTexts := make([]string, len(topItems))
-	for i, item := range topItems {
-		if item.Text != "" {
-			topTexts[i] = item.Text
-		} else {
-			topTexts[i] = fmt.Sprintf("%s投稿", string(item.Kind))
-		}
-	}
-
-	// Director Serviceにキュー情報を更新（将来実装）
-	// 現在は直接更新できないため、WebSocketで配信のみ
-	if broadcastHub != nil {
-		// 全クライアントにキュー更新を配信
-		nowPlaying, err := directorClient.GetNowPlaying()
-		if err == nil {
-			nowPlaying.QueueCount = pttQueue.Size()
-			nowPlaying.TopQueue = topTexts
-			nowPlaying.Listeners = broadcastHub.GetClientCount()
-			broadcastHub.Broadcast("queue_update", nowPlaying)
-		}
-	}
 }
