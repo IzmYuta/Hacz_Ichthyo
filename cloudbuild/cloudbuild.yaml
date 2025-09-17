@@ -6,7 +6,15 @@ steps:
 
   # Build Web image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-f', 'infra/docker/web.Dockerfile', '-t', 'gcr.io/$PROJECT_ID/web:$_COMMIT_SHA', '.']
+    args: 
+      - 'build'
+      - '-f'
+      - 'infra/docker/web.Dockerfile'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_API_BASE=https://api-$PROJECT_NUMBER.asia-northeast1.run.app'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/web:$_COMMIT_SHA'
+      - '.'
     id: 'build-web'
 
   # Build Host image

@@ -3,6 +3,9 @@ WORKDIR /app
 COPY apps/web ./apps/web
 WORKDIR /app/apps/web
 ENV CI=true
+# ビルド時に環境変数を渡す
+ARG NEXT_PUBLIC_API_BASE
+ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
 RUN npm i -g pnpm && pnpm i && pnpm build
 
 FROM node:20-slim
