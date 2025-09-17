@@ -748,7 +748,7 @@ func (h *HostAgent) startHTTPServer() {
 		log.Printf("Received script generation request: topic=%s, style=%s", req.Topic, req.Style)
 
 		// プロンプトを作成
-		prompt := fmt.Sprintf("%s トピック「%s」について、ラジオDJとして20秒程度の内容を話してください。", h.currentPrompt, req.Topic)
+		prompt := fmt.Sprintf("%s トピック「%s」について、ラジオDJとして30秒程度の内容を話してください。必要に応じて最新の情報を検索して取り込んでください。", h.currentPrompt, req.Topic)
 		if req.Style != "" {
 			prompt += fmt.Sprintf(" スタイル: %s", req.Style)
 		}
