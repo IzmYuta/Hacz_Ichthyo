@@ -43,6 +43,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_REALTIME_MODEL=${OPENAI_REALTIME_MODEL:-gpt-realtime}
       - OPENAI_REALTIME_VOICE=${OPENAI_REALTIME_VOICE:-marin}
+      - HOST_BASE=http://host:8080
     depends_on:
       db:
         condition: service_healthy
@@ -115,7 +116,10 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_REALTIME_MODEL=${OPENAI_REALTIME_MODEL:-gpt-realtime}
       - OPENAI_REALTIME_VOICE=${OPENAI_REALTIME_VOICE:-marin}
+      - API_BASE=http://api:8080
+      - HOST_PORT=8080
     depends_on:
+      - api
       - livekit
     restart: unless-stopped
 

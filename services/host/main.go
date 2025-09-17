@@ -31,6 +31,8 @@ type HostAgent struct {
 	currentPrompt  string
 	scriptTopics   []string
 	currentTopic   int
+	dialogueMode   bool
+	dialogueConn   *websocket.Conn
 }
 
 type PCMWriter struct {
@@ -125,8 +127,8 @@ func main() {
 	defer cancel()
 
 	agent := &HostAgent{
-		ctx:           ctx,
-		cancel:        cancel,
+		ctx:    ctx,
+		cancel: cancel,
 		scriptTopics: []string{
 			"今日の天気予報",
 			"最新のニュース",
@@ -138,6 +140,7 @@ func main() {
 			"エンターテイメント",
 		},
 		currentTopic: 0,
+		dialogueMode: false,
 	}
 
 	// HTTPサーバーを起動（Cloud Run用）
@@ -157,6 +160,9 @@ func main() {
 	// 	log.Printf("Failed to connect to OpenAI: %v", err)
 	// 	// OpenAI接続に失敗しても続行（テストモードで動作）
 	// }
+
+	// キュー監視ループを開始
+	go agent.monitorQueue()
 
 	// メインループ
 	agent.run()
@@ -224,40 +230,130 @@ func (h *HostAgent) connectToLiveKit() error {
 	return nil
 }
 
-// connectToOpenAI OpenAI Realtime API接続（将来のPTT実装用にコメントアウト）
-// func (h *HostAgent) connectToOpenAI() error {
-// 	apiKey := getEnv("OPENAI_API_KEY", "")
-// 	if apiKey != "" {
-// 		log.Printf("OpenAI API key: %s", apiKey[:10]+"...") // 最初の10文字だけ表示
-// 	}
+// connectToOpenAIRealtime OpenAI Realtime API接続（対話モード用）
+func (h *HostAgent) connectToOpenAIRealtime() error {
+	apiKey := getEnv("OPENAI_API_KEY", "")
+	if apiKey != "" {
+		log.Printf("OpenAI API key: %s", apiKey[:10]+"...") // 最初の10文字だけ表示
+	}
 
-// 	if apiKey == "" || apiKey == "your-openai-api-key" || apiKey == "test-mode" {
-// 		log.Println("OpenAI API key not set, using test mode")
-// 		h.openaiConn = nil // テストモード
-// 		return nil
-// 	}
+	if apiKey == "" || apiKey == "your-openai-api-key" || apiKey == "test-mode" {
+		log.Println("OpenAI API key not set, using test mode")
+		h.dialogueConn = nil // テストモード
+		return nil
+	}
 
-// 	log.Println("Attempting to connect to OpenAI Realtime API...")
+	log.Println("Attempting to connect to OpenAI Realtime API for dialogue...")
 
-// 	// OpenAI Realtime WebSocket接続
-// 	url := "wss://api.openai.com/v1/realtime?model=gpt-realtime"
-// 	headers := map[string][]string{
-// 		"Authorization": {fmt.Sprintf("Bearer %s", apiKey)},
-// 	}
+	// OpenAI Realtime WebSocket接続
+	url := "wss://api.openai.com/v1/realtime?model=gpt-realtime"
+	headers := map[string][]string{
+		"Authorization": {fmt.Sprintf("Bearer %s", apiKey)},
+	}
 
-// 	log.Printf("Connecting to: %s", url)
-// 	conn, _, err := websocket.DefaultDialer.Dial(url, headers)
-// 	if err != nil {
-// 		log.Printf("Failed to connect to OpenAI: %v, using test mode", err)
-// 		h.openaiConn = nil // テストモードにフォールバック
-// 		return nil
-// 	}
+	log.Printf("Connecting to: %s", url)
+	conn, _, err := websocket.DefaultDialer.Dial(url, headers)
+	if err != nil {
+		log.Printf("Failed to connect to OpenAI: %v, using test mode", err)
+		h.dialogueConn = nil // テストモードにフォールバック
+		return nil
+	}
 
-// 	h.openaiConn = conn
+	h.dialogueConn = conn
 
-// 	log.Println("Connected to OpenAI Realtime")
-// 	return nil
-// }
+	// セッション設定を送信
+	if err := h.setupDialogueSession(); err != nil {
+		log.Printf("Failed to setup dialogue session: %v", err)
+		conn.Close()
+		h.dialogueConn = nil
+		return err
+	}
+
+	// メッセージ処理ループを開始
+	go h.handleDialogueMessages()
+
+	log.Println("Connected to OpenAI Realtime for dialogue")
+	return nil
+}
+
+// setupDialogueSession 対話用のセッション設定を送信
+func (h *HostAgent) setupDialogueSession() error {
+	if h.dialogueConn == nil {
+		return fmt.Errorf("dialogue connection not available")
+	}
+
+	sessionUpdate := map[string]interface{}{
+		"type": "session.update",
+		"session": map[string]interface{}{
+			"type":              "realtime",
+			"instructions":      "あなたは24時間AIラジオのDJです。リスナーとの対話では、自然で親しみやすい口調で、ラジオDJらしい応答をしてください。短く、親しみやすく、エンターテイメント性のある会話を心がけてください。",
+			"output_modalities": []string{"audio"},
+			"audio": map[string]interface{}{
+				"input": map[string]interface{}{
+					"turn_detection": map[string]interface{}{
+						"type":            "server_vad",
+						"idle_timeout_ms": 6000,
+					},
+				},
+				"output": map[string]interface{}{
+					"voice": "marin",
+				},
+			},
+		},
+	}
+
+	if err := h.dialogueConn.WriteJSON(sessionUpdate); err != nil {
+		return fmt.Errorf("failed to setup dialogue session: %w", err)
+	}
+
+	log.Println("Dialogue session setup completed")
+	return nil
+}
+
+// handleDialogueMessages 対話メッセージの処理
+func (h *HostAgent) handleDialogueMessages() {
+	if h.dialogueConn == nil {
+		return
+	}
+
+	log.Println("Starting dialogue message handling loop...")
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		default:
+			var msg map[string]interface{}
+			if err := h.dialogueConn.ReadJSON(&msg); err != nil {
+				log.Printf("Dialogue connection error: %v", err)
+				h.endDialogueMode()
+				return
+			}
+
+			log.Printf("Received dialogue message: %+v", msg)
+
+			// 音声出力をLiveKitにPublish
+			if msgType, ok := msg["type"].(string); ok {
+				switch msgType {
+				case "response.output_audio.delta":
+					if audioData, ok := msg["delta"].(string); ok {
+						log.Printf("Received dialogue audio delta, length: %d", len(audioData))
+						h.publishAudioToLiveKit(audioData)
+					}
+				case "response.done":
+					log.Println("Dialogue response completed")
+				case "session.created":
+					log.Println("Dialogue session created")
+				case "session.updated":
+					log.Println("Dialogue session updated")
+				case "conversation.item.added", "conversation.item.done", "response.output_audio.done", "response.output_audio_transcript.done", "response.content_part.done", "response.output_item.done", "rate_limits.updated":
+					// これらのメッセージは無視
+				default:
+					log.Printf("Unhandled dialogue message type: %s", msgType)
+				}
+			}
+		}
+	}
+}
 
 func (h *HostAgent) run() {
 	// 音声データ受信ループ（将来のPTT実装用にコメントアウト）
@@ -274,8 +370,10 @@ func (h *HostAgent) run() {
 		case <-h.ctx.Done():
 			return
 		case <-ticker.C:
-			// 台本を生成して発話
-			h.generateAndSpeakScript()
+			// 対話モードでない場合のみ台本を生成して発話
+			if !h.dialogueMode {
+				h.generateAndSpeakScript()
+			}
 		}
 	}
 }
@@ -580,7 +678,7 @@ func (h *HostAgent) generateAndSpeakScript() {
 // }
 
 func (h *HostAgent) startHTTPServer() {
-	port := getEnv("PORT", "8080")
+	port := getEnv("HOST_PORT", "8080")
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -653,6 +751,89 @@ func (h *HostAgent) startHTTPServer() {
 		})
 	})
 
+	// 対話モード用の音声入力エンドポイント
+	http.HandleFunc("/audio/input", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			Type  string `json:"type"`
+			Audio string `json:"audio"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("Received audio input: %d bytes", len(req.Audio))
+
+		// OpenAI Realtimeに音声データを送信
+		if h.dialogueConn != nil {
+			audioMessage := map[string]interface{}{
+				"type":  "input_audio_buffer.append",
+				"audio": req.Audio,
+			}
+			if err := h.dialogueConn.WriteJSON(audioMessage); err != nil {
+				log.Printf("Failed to send audio to OpenAI: %v", err)
+				http.Error(w, "Failed to send audio", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "audio_sent",
+		})
+	})
+
+	// 対話モード用の音声コミットエンドポイント
+	http.HandleFunc("/audio/commit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		log.Printf("Received audio commit request")
+
+		// OpenAI Realtimeにコミット信号を送信
+		if h.dialogueConn != nil {
+			commitMessage := map[string]interface{}{
+				"type": "input_audio_buffer.commit",
+			}
+			if err := h.dialogueConn.WriteJSON(commitMessage); err != nil {
+				log.Printf("Failed to send commit to OpenAI: %v", err)
+				http.Error(w, "Failed to send commit", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "commit_sent",
+		})
+	})
+
+	// 対話終了エンドポイント
+	http.HandleFunc("/dialogue/end", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		log.Printf("Received dialogue end request")
+
+		// 対話モードを終了
+		h.endDialogueMode()
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "dialogue_ended",
+		})
+	})
+
 	log.Printf("Starting HTTP server on port %s", port)
 	go func() {
 		if err := http.ListenAndServe(":"+port, nil); err != nil {
@@ -662,6 +843,183 @@ func (h *HostAgent) startHTTPServer() {
 
 	// HTTPサーバーの起動を少し待つ
 	time.Sleep(1 * time.Second)
+}
+
+// monitorQueue キューを監視して対話リクエストを処理
+func (h *HostAgent) monitorQueue() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	log.Println("Starting queue monitoring...")
+
+	for {
+		select {
+		case <-h.ctx.Done():
+			log.Println("Queue monitoring stopped")
+			return
+		case <-ticker.C:
+			h.checkQueue()
+		}
+	}
+}
+
+// checkQueue キューをチェックして対話リクエストを処理
+func (h *HostAgent) checkQueue() {
+	// APIサーバーのキューエンドポイントをチェック
+	apiBase := getEnv("API_BASE", "http://api:8080")
+
+	// HTTPクライアントにタイムアウトを設定
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	// まずヘルスチェックを実行
+	healthResp, err := client.Get(apiBase + "/health")
+	if err != nil {
+		log.Printf("API server health check failed (server may not be running): %v", err)
+		return
+	}
+	healthResp.Body.Close()
+
+	if healthResp.StatusCode != http.StatusOK {
+		log.Printf("API server health check returned status: %d", healthResp.StatusCode)
+		return
+	}
+
+	resp, err := client.Get(apiBase + "/v1/queue/peek")
+	if err != nil {
+		log.Printf("Failed to check queue: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Queue peek returned status: %d", resp.StatusCode)
+		return
+	}
+
+	var queueData struct {
+		Item *struct {
+			ID     string `json:"id"`
+			Kind   string `json:"kind"`
+			Text   string `json:"text"`
+			Status string `json:"status"`
+		} `json:"item"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&queueData); err != nil {
+		log.Printf("Failed to decode queue response: %v", err)
+		return
+	}
+
+	if queueData.Item != nil && queueData.Item.Kind == "dialogue" && queueData.Item.Status == "queued" {
+		log.Printf("Dialogue request found in queue: %s", queueData.Item.ID)
+
+		// キューからアイテムを削除して対話モードを開始
+		h.dequeueDialogueRequest(queueData.Item.ID)
+		h.startDialogueMode(queueData.Item.ID)
+	}
+}
+
+// startDialogueMode 対話モードを開始
+func (h *HostAgent) startDialogueMode(requestID string) {
+	if h.dialogueMode {
+		return // 既に対話モード中
+	}
+
+	log.Printf("Starting dialogue mode for request: %s", requestID)
+	h.dialogueMode = true
+
+	// 現在のTTSを停止（必要に応じて）
+	log.Println("Stopping current TTS for dialogue mode")
+
+	// OpenAI Realtime接続を開始
+	if err := h.connectToOpenAIRealtime(); err != nil {
+		log.Printf("Failed to connect to OpenAI Realtime: %v", err)
+		h.dialogueMode = false
+		return
+	}
+
+	// 対話開始の通知を送信
+	log.Printf("Sending dialogue_ready notification for request: %s", requestID)
+	h.sendDialogueNotification("dialogue_ready", requestID)
+}
+
+// endDialogueMode 対話モードを終了
+func (h *HostAgent) endDialogueMode() {
+	if !h.dialogueMode {
+		return
+	}
+
+	log.Println("Ending dialogue mode")
+	h.dialogueMode = false
+
+	// OpenAI Realtime接続を切断
+	if h.dialogueConn != nil {
+		h.dialogueConn.Close()
+		h.dialogueConn = nil
+	}
+
+	// 通常のラジオ放送を再開
+	log.Println("Resuming normal radio broadcast")
+	h.sendMessage("ありがとうございました。通常のラジオ放送に戻ります。")
+
+	// 対話終了の通知を送信
+	log.Printf("Sending dialogue_ended notification")
+	h.sendDialogueNotification("dialogue_ended", "")
+}
+
+// sendDialogueNotification 対話状態の変更を通知
+func (h *HostAgent) sendDialogueNotification(notificationType, requestID string) {
+	apiBase := getEnv("API_BASE", "http://api:8080")
+
+	payload := map[string]interface{}{
+		"type": notificationType,
+	}
+	if requestID != "" {
+		payload["id"] = requestID
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	// HTTPクライアントにタイムアウトを設定
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Post(apiBase+"/v1/broadcast", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Failed to send dialogue notification: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Dialogue notification sent: %s (requestID: %s)", notificationType, requestID)
+}
+
+// dequeueDialogueRequest キューから対話リクエストを削除
+func (h *HostAgent) dequeueDialogueRequest(requestID string) {
+	apiBase := getEnv("API_BASE", "http://api:8080")
+
+	payload := map[string]interface{}{
+		"id": requestID,
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	// HTTPクライアントにタイムアウトを設定
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Post(apiBase+"/v1/queue/dequeue", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Failed to dequeue dialogue request: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Dialogue request dequeued: %s", requestID)
 }
 
 func getEnv(key, defaultValue string) string {

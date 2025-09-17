@@ -10,13 +10,16 @@ export default function OnAir() {
   const [subtitles, setSubtitles] = useState('');
   const [theme, setTheme] = useState({ title: 'Radio-24', color: '#1a1a2e' });
   const [ws, setWs] = useState<WebSocket | null>(null);
+  const [broadcastWs, setBroadcastWs] = useState<WebSocket | null>(null);
+  const [dialogueRequested, setDialogueRequested] = useState(false);
+  const [dialogueActive, setDialogueActive] = useState(false);
   const roomRef = useRef<Room | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
 
   const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8080';
 
   useEffect(() => {
-    // WebSocket接続
+    // PTT WebSocket接続
     const wsUrl = API_BASE.replace('http', 'ws') + '/ws/ptt';
     const websocket = new WebSocket(wsUrl);
     
@@ -28,13 +31,54 @@ export default function OnAir() {
       const data = JSON.parse(event.data);
       if (data.type === 'ptt_queued') {
         console.log('PTT queued:', data.id);
+      } else if (data.type === 'dialogue_queued') {
+        console.log('Dialogue queued:', data.id);
+        setDialogueRequested(true);
+      } else if (data.type === 'dialogue_end_ack') {
+        console.log('Dialogue end acknowledged');
+        setDialogueActive(false);
+        setDialogueRequested(false);
       }
     };
     
     setWs(websocket);
     
+    // ブロードキャストWebSocket接続
+    const broadcastWsUrl = API_BASE.replace('http', 'ws') + '/ws/broadcast';
+    const broadcastWebsocket = new WebSocket(broadcastWsUrl);
+    
+    broadcastWebsocket.onopen = () => {
+      console.log('Broadcast WebSocket connected');
+    };
+    
+    broadcastWebsocket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      console.log('Broadcast message received:', data);
+      
+      if (data.type === 'dialogue_ready') {
+        console.log('Dialogue ready:', data.id);
+        setDialogueActive(true);
+        setDialogueRequested(false);
+      } else if (data.type === 'dialogue_ended') {
+        console.log('Dialogue ended');
+        setDialogueActive(false);
+        setDialogueRequested(false);
+      }
+    };
+    
+    broadcastWebsocket.onerror = (error) => {
+      console.error('Broadcast WebSocket error:', error);
+    };
+    
+    broadcastWebsocket.onclose = (event) => {
+      console.log('Broadcast WebSocket closed:', event.code, event.reason);
+    };
+    
+    setBroadcastWs(broadcastWebsocket);
+    
     return () => {
       websocket.close();
+      broadcastWebsocket.close();
     };
   }, [API_BASE]);
 
@@ -89,6 +133,40 @@ export default function OnAir() {
     }
     setConnected(false);
     setSubtitles('');
+    setDialogueRequested(false);
+    setDialogueActive(false);
+  }
+
+  async function requestDialogue() {
+    if (!ws) return;
+    
+    try {
+      const message = {
+        type: 'dialogue_request',
+        kind: 'dialogue'
+      };
+      ws.send(JSON.stringify(message));
+      setDialogueRequested(true);
+      console.log('Dialogue request sent');
+    } catch (error) {
+      console.error('Failed to send dialogue request:', error);
+    }
+  }
+
+  async function endDialogue() {
+    if (!ws) return;
+    
+    try {
+      const message = {
+        type: 'dialogue_end',
+        kind: 'dialogue'
+      };
+      ws.send(JSON.stringify(message));
+      setDialogueActive(false);
+      console.log('Dialogue end request sent');
+    } catch (error) {
+      console.error('Failed to send dialogue end request:', error);
+    }
   }
 
   async function rotateTheme() {
@@ -146,14 +224,47 @@ export default function OnAir() {
             onMouseDown={startPTT} 
             onMouseUp={stopPTT} 
             disabled={!connected}
-            colorScheme="green"
+            colorScheme={dialogueActive ? "yellow" : "green"}
             size="lg"
-            bg="green.500"
-            _hover={{ bg: "green.600" }}
+            bg={dialogueActive ? "yellow.500" : "green.500"}
+            _hover={{ bg: dialogueActive ? "yellow.600" : "green.600" }}
             _disabled={{ bg: "gray.500" }}
           >
-            🎙️ PTT
+            🎙️ PTT {dialogueActive && "(対話中)"}
           </Button>
+
+          {!dialogueRequested && !dialogueActive ? (
+            <Button 
+              onClick={requestDialogue}
+              disabled={!connected}
+              colorScheme="yellow"
+              size="lg"
+              bg="yellow.500"
+              _hover={{ bg: "yellow.600" }}
+              _disabled={{ bg: "gray.500" }}
+            >
+              💬 対話リクエスト
+            </Button>
+          ) : dialogueRequested ? (
+            <Button 
+              disabled
+              colorScheme="orange"
+              size="lg"
+              bg="orange.500"
+            >
+              ⏳ 対話待機中...
+            </Button>
+          ) : (
+            <Button 
+              onClick={endDialogue}
+              colorScheme="red"
+              size="lg"
+              bg="red.500"
+              _hover={{ bg: "red.600" }}
+            >
+              🔚 対話終了
+            </Button>
+          )}
 
           <Button 
             onClick={rotateTheme}
@@ -194,18 +305,62 @@ export default function OnAir() {
           </Text>
         </Box>
 
+        {dialogueActive && (
+          <Box 
+            bg="yellow.900" 
+            p={4} 
+            borderRadius="md"
+            border="2px solid"
+            borderColor="yellow.500"
+            animation="pulse 2s infinite"
+          >
+            <Text fontSize="lg" fontWeight="bold" color="yellow.200" mb={2}>
+              🎙️ 対話モード中
+            </Text>
+            <Text fontSize="md" color="yellow.100" mb={2}>
+              AI DJと対話できます。PTTボタンを押して話してください。
+            </Text>
+            <Text fontSize="sm" color="yellow.300">
+              💡 PTTボタンが黄色になっています。押し続けて話しかけてください。
+            </Text>
+          </Box>
+        )}
+
         <audio ref={remoteAudioRef} autoPlay style={{ display: 'none' }} />
       </VStack>
     </Box>
   );
 
   function startPTT() {
-    // 任意：input_audio_buffer.append を使う場合の実装。MVPはserver_vadに任せてOK
-    console.log('PTT started');
+    if (!ws) return;
+    
+    if (dialogueActive) {
+      // 対話モード中は音声入力を開始
+      const message = {
+        type: 'input_audio_buffer.append',
+        audio: '' // 実際の実装では音声データを送信
+      };
+      ws.send(JSON.stringify(message));
+      console.log('PTT started for dialogue - speaking to AI DJ');
+    } else {
+      // 通常のPTT
+      console.log('PTT started - normal mode');
+    }
   }
 
   function stopPTT() {
-    // 任意
-    console.log('PTT stopped');
+    if (!ws) return;
+    
+    if (dialogueActive) {
+      // 対話モード中は音声入力を終了
+      const message = {
+        type: 'input_audio_buffer.commit'
+      };
+      ws.send(JSON.stringify(message));
+      console.log('PTT stopped for dialogue - finished speaking to AI DJ');
+    } else {
+      // 通常のPTT
+      console.log('PTT stopped - normal mode');
+    }
   }
 }

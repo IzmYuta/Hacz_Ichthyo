@@ -42,6 +42,7 @@ var db *sql.DB
 var tokenGenerator *livekit.TokenGenerator
 var pttQueue *queue.Queue
 var broadcastHub *broadcast.Hub
+var dialogueConnections map[string]*websocket.Conn
 
 func main() {
 	// 環境変数読み込み（リポジトリルートの.envファイル）
@@ -96,6 +97,9 @@ func main() {
 	// PTT Queue初期化
 	pttQueue = queue.NewQueue()
 
+	// 対話接続管理初期化
+	dialogueConnections = make(map[string]*websocket.Conn)
+
 	// ルーター設定
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -110,6 +114,9 @@ func main() {
 	r.Post("/v1/room/join", handleRoomJoin)
 	r.Post("/v1/submission", handleSubmission)
 	r.Post("/v1/theme/rotate", handleThemeRotate)
+	r.Get("/v1/queue/peek", handleQueuePeek)
+	r.Post("/v1/queue/dequeue", handleQueueDequeue)
+	r.Post("/v1/broadcast", handleBroadcastMessage)
 
 	port := getEnv("PORT", "8080")
 	log.Printf("Server starting on port %s", port)
@@ -160,6 +167,11 @@ type PTTMessage struct {
 	Text string `json:"text,omitempty"`
 }
 
+type DialogueRequest struct {
+	Type string `json:"type"`
+	Kind string `json:"kind"`
+}
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true // 本番では適切なオリジンチェックを実装
@@ -177,25 +189,35 @@ func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
 	log.Println("PTT WebSocket connected")
 
 	for {
-		var msg PTTMessage
+		var msg map[string]interface{}
 		err := conn.ReadJSON(&msg)
 		if err != nil {
 			log.Printf("WebSocket read error: %v", err)
 			break
 		}
 
-		if msg.Type == "ptt" {
+		msgType, ok := msg["type"].(string)
+		if !ok {
+			log.Printf("Invalid message type")
+			continue
+		}
+
+		switch msgType {
+		case "ptt":
 			// PTTアイテムをキューに追加
+			kind, _ := msg["kind"].(string)
+			text, _ := msg["text"].(string)
+
 			item := queue.PTTItem{
 				ID:       fmt.Sprintf("ptt_%d", time.Now().UnixNano()),
 				UserID:   "anonymous", // 実際の実装では認証から取得
-				Kind:     queue.PTTKind(msg.Kind),
-				Text:     msg.Text,
+				Kind:     queue.PTTKind(kind),
+				Text:     text,
 				Priority: 0, // デフォルト優先度
 			}
 
 			pttQueue.Enqueue(item)
-			log.Printf("PTT enqueued: %s", msg.Text)
+			log.Printf("PTT enqueued: %s", text)
 
 			// クライアントに確認応答
 			response := map[string]interface{}{
@@ -203,6 +225,56 @@ func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
 				"id":   item.ID,
 			}
 			conn.WriteJSON(response)
+
+		case "dialogue_request":
+			// 対話リクエストをキューに追加
+			kind, _ := msg["kind"].(string)
+
+			item := queue.PTTItem{
+				ID:       fmt.Sprintf("dialogue_%d", time.Now().UnixNano()),
+				UserID:   "anonymous", // 実際の実装では認証から取得
+				Kind:     queue.PTTKind(kind),
+				Text:     "対話リクエスト",
+				Priority: 10, // 対話リクエストは高優先度
+			}
+
+			pttQueue.Enqueue(item)
+			log.Printf("Dialogue request enqueued: %s", item.ID)
+
+			// クライアントに確認応答
+			response := map[string]interface{}{
+				"type": "dialogue_queued",
+				"id":   item.ID,
+			}
+			conn.WriteJSON(response)
+
+		case "dialogue_end":
+			// 対話終了リクエスト
+			log.Printf("Dialogue end request received")
+
+			// hostエージェントに対話終了を通知
+			endDialogueMode()
+
+			// クライアントに確認応答
+			response := map[string]interface{}{
+				"type": "dialogue_end_ack",
+			}
+			conn.WriteJSON(response)
+
+		case "input_audio_buffer.append":
+			// 対話モード中の音声入力
+			audio, _ := msg["audio"].(string)
+			log.Printf("Received audio input for dialogue: %d bytes", len(audio))
+
+			// OpenAI Realtimeに音声データを転送
+			forwardAudioToOpenAI(audio)
+
+		case "input_audio_buffer.commit":
+			// 音声入力のコミット
+			log.Printf("Audio input committed for dialogue")
+
+			// OpenAI Realtimeにコミット信号を送信
+			commitAudioToOpenAI()
 		}
 	}
 }
@@ -519,6 +591,139 @@ func getSimilarSubmissions(queryEmbedding string, limit int) ([]map[string]inter
 	}
 
 	return recommendations, nil
+}
+
+func handleQueuePeek(w http.ResponseWriter, r *http.Request) {
+	item := pttQueue.Peek()
+
+	w.Header().Set("Content-Type", "application/json")
+	if item != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"item": item,
+		})
+	} else {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"item": nil,
+		})
+	}
+}
+
+func handleQueueDequeue(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// キューからアイテムを削除
+	removed := pttQueue.Remove(req.ID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"removed": removed,
+		"id":      req.ID,
+	})
+}
+
+func handleBroadcastMessage(w http.ResponseWriter, r *http.Request) {
+	var msg map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	msgType := msg["type"].(string)
+	log.Printf("Broadcasting message: %s", msgType)
+
+	// Broadcast Hubにメッセージを送信
+	broadcastHub.Broadcast(msgType, msg)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "broadcasted",
+	})
+}
+
+// forwardAudioToOpenAI OpenAI Realtimeに音声データを転送
+func forwardAudioToOpenAI(audioData string) {
+	// 実際の実装では、hostエージェントのOpenAI Realtime接続に音声データを転送
+	// ここでは簡略化のため、hostエージェントにHTTPリクエストで通知
+	apiBase := getEnv("HOST_BASE", "http://host:8080")
+
+	payload := map[string]interface{}{
+		"type":  "audio_input",
+		"audio": audioData,
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	// HTTPクライアントにタイムアウトを設定
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Post(apiBase+"/audio/input", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Failed to forward audio to OpenAI: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Audio forwarded to OpenAI Realtime")
+}
+
+// commitAudioToOpenAI OpenAI Realtimeに音声コミット信号を送信
+func commitAudioToOpenAI() {
+	// 実際の実装では、hostエージェントのOpenAI Realtime接続にコミット信号を転送
+	apiBase := getEnv("HOST_BASE", "http://host:8080")
+
+	payload := map[string]interface{}{
+		"type": "audio_commit",
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	// HTTPクライアントにタイムアウトを設定
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Post(apiBase+"/audio/commit", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Failed to commit audio to OpenAI: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Audio commit signal sent to OpenAI Realtime")
+}
+
+// endDialogueMode hostエージェントに対話終了を通知
+func endDialogueMode() {
+	apiBase := getEnv("HOST_BASE", "http://host:8080")
+
+	payload := map[string]interface{}{
+		"type": "end_dialogue",
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	// HTTPクライアントにタイムアウトを設定
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Post(apiBase+"/dialogue/end", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Failed to notify host agent to end dialogue: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Dialogue end notification sent to host agent")
 }
 
 func getEnv(key, defaultValue string) string {
