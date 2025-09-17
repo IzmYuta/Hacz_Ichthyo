@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/radio24/api/pkg/host"
-	"github.com/radio24/api/pkg/mcp"
+	"github.com/radio24/director/pkg/host"
+	"github.com/radio24/director/pkg/mcp"
 )
 
 type Segment string
@@ -37,6 +37,14 @@ type NowPlaying struct {
 	TopQueue   []string  `json:"topQueue"`
 }
 
+type Status struct {
+	IsRunning    bool      `json:"isRunning"`
+	CurrentTheme string    `json:"currentTheme"`
+	CurrentSeg   string    `json:"currentSegment"`
+	Uptime       time.Time `json:"uptime"`
+	LastUpdate   time.Time `json:"lastUpdate"`
+}
+
 type Director struct {
 	mu            sync.RWMutex
 	currentTheme  Theme
@@ -44,7 +52,6 @@ type Director struct {
 	nextTick      time.Time
 	listeners     int
 	themes        []Theme
-	hostChannel   chan string
 	ctx           context.Context
 	cancel        context.CancelFunc
 	db            *sql.DB
@@ -52,11 +59,12 @@ type Director struct {
 	queueCount    int
 	topQueue      []string
 	mcpClient     *mcp.MCPClient
-	broadcastHub  interface{} // BroadcastHubへの参照（循環参照を避けるためinterface{}）
 	hostClient    *host.HostClient
+	startTime     time.Time
+	lastUpdate    time.Time
 }
 
-func NewDirector(hostChannel chan string, db *sql.DB, broadcastHub interface{}) *Director {
+func NewDirector(db *sql.DB, hostClient *host.HostClient) *Director {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	themes := []Theme{
@@ -75,7 +83,6 @@ func NewDirector(hostChannel chan string, db *sql.DB, broadcastHub interface{}) 
 		currentSeg:    SegmentOP,
 		nextTick:      now.Add(15 * time.Minute),
 		themes:        themes,
-		hostChannel:   hostChannel,
 		ctx:           ctx,
 		cancel:        cancel,
 		db:            db,
@@ -83,7 +90,9 @@ func NewDirector(hostChannel chan string, db *sql.DB, broadcastHub interface{}) 
 		queueCount:    0,
 		topQueue:      []string{},
 		mcpClient:     mcp.NewMCPClient(),
-		broadcastHub:  broadcastHub,
+		hostClient:    hostClient,
+		startTime:     now,
+		lastUpdate:    now,
 	}
 
 	// 初期スケジュール読み込み
@@ -121,6 +130,7 @@ func (d *Director) tick() {
 	defer d.mu.Unlock()
 
 	now := time.Now()
+	d.lastUpdate = now
 
 	// 正時チェック（テーマ切替）
 	if d.shouldSwitchTheme(now) {
@@ -148,7 +158,7 @@ func (d *Director) switchTheme(now time.Time) {
 
 	// Hostにテーマ変更を通知
 	message := fmt.Sprintf("テーマが「%s」に変更されました。", d.currentTheme.Title)
-	d.sendToHost(message)
+	d.sendInstructionToHost(message)
 
 	log.Printf("Theme switched to: %s", d.currentTheme.Title)
 }
@@ -173,16 +183,16 @@ func (d *Director) advanceSegment() {
 
 	// Hostにセグメント変更を通知
 	message := fmt.Sprintf("セグメントが「%s」に変更されました。", d.currentSeg)
-	d.sendToHost(message)
+	d.sendInstructionToHost(message)
 
 	log.Printf("Segment advanced to: %s", d.currentSeg)
 }
 
-func (d *Director) sendToHost(message string) {
-	select {
-	case d.hostChannel <- message:
-	default:
-		log.Printf("Host channel full, dropping message: %s", message)
+func (d *Director) sendInstructionToHost(message string) {
+	if d.hostClient != nil {
+		if err := d.hostClient.SendInstruction(message); err != nil {
+			log.Printf("Failed to send instruction to host: %v", err)
+		}
 	}
 }
 
@@ -201,6 +211,19 @@ func (d *Director) GetNowPlaying() NowPlaying {
 	}
 }
 
+func (d *Director) GetStatus() Status {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return Status{
+		IsRunning:    d.ctx.Err() == nil,
+		CurrentTheme: d.currentTheme.Title,
+		CurrentSeg:   string(d.currentSeg),
+		Uptime:       d.startTime,
+		LastUpdate:   d.lastUpdate,
+	}
+}
+
 func (d *Director) SetListeners(count int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -211,6 +234,20 @@ func (d *Director) AdvanceSegment() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.advanceSegment()
+}
+
+func (d *Director) SetTheme(themeTitle string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// テーマを検索して設定
+	for _, theme := range d.themes {
+		if theme.Title == themeTitle {
+			d.currentTheme = theme
+			d.loadScheduleForHour(time.Now().Hour())
+			break
+		}
+	}
 }
 
 func (d *Director) GetCurrentSegment() Segment {
@@ -242,10 +279,7 @@ func (d *Director) loadScheduleForHour(hour int) {
 		return
 	}
 
-	d.mu.Lock()
 	d.currentPrompt = prompt
-	d.mu.Unlock()
-
 	log.Printf("Loaded schedule for hour %d: %s", hour, prompt)
 }
 
@@ -302,8 +336,18 @@ func (d *Director) GenerateHostPrompt() string {
 	return prompt
 }
 
-// SendPromptToHost Hostにプロンプトを送信
-func (d *Director) SendPromptToHost() {
-	prompt := d.GenerateHostPrompt()
-	d.sendToHost(prompt)
+// SendInstructionToHost Hostに指示を送信
+func (d *Director) SendInstructionToHost(instruction string) error {
+	if d.hostClient == nil {
+		return fmt.Errorf("host client not initialized")
+	}
+	return d.hostClient.SendInstruction(instruction)
+}
+
+// UpdateHostPrompt Hostのプロンプトを更新
+func (d *Director) UpdateHostPrompt(prompt string) error {
+	if d.hostClient == nil {
+		return fmt.Errorf("host client not initialized")
+	}
+	return d.hostClient.UpdatePrompt(prompt)
 }
