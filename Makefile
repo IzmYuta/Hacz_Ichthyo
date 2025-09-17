@@ -440,12 +440,6 @@ tf-fmt: ## Terraformファイルをフォーマット
 # Cloud Build
 # =============================================================================
 
-.PHONY: cb-test
-cb-test: ## Cloud Buildでテストを実行
-	@echo "🧪 Cloud Buildでテストを実行中..."
-	gcloud builds submit --config cloudbuild/cloudbuild-test.yaml
-	@echo "✅ Cloud Buildテストが完了しました"
-
 .PHONY: cb-deploy
 cb-deploy: ## Cloud Buildでデプロイを実行
 	@echo "🚀 Cloud Buildでデプロイを実行中..."

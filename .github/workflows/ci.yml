@@ -97,32 +97,8 @@ jobs:
           cd apps/web
           pnpm lint
 
-  cloud-build-test:
-    needs: test
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ env.PROJECT_ID }}
-
-      - name: Run Cloud Build test
-        run: |
-          gcloud builds submit \
-            --config cloudbuild/cloudbuild-test.yaml
-
   cloud-build-deploy:
-    needs: cloud-build-test
+    needs: test
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
 
