@@ -28,6 +28,8 @@ type HostAgent struct {
 	reconnectTimer *time.Timer
 	ctx            context.Context
 	cancel         context.CancelFunc
+	directorChan   chan string
+	currentPrompt  string
 }
 
 type PCMWriter struct {
@@ -124,8 +126,10 @@ func main() {
 	defer cancel()
 
 	agent := &HostAgent{
-		ctx:    ctx,
-		cancel: cancel,
+		ctx:           ctx,
+		cancel:        cancel,
+		directorChan:  make(chan string, 100),
+		currentPrompt: "あなたは24時間AIラジオのDJ。無音禁止、短文でテンポよく。Q&Aでは回答→10文字要約→次へ。",
 	}
 
 	// HTTPサーバーを起動（Cloud Run用）
@@ -276,6 +280,9 @@ func (h *HostAgent) connectToOpenAI() error {
 func (h *HostAgent) run() {
 	// 音声データ受信ループ
 	go h.handleOpenAIMessages()
+
+	// Director指示処理ループ
+	go h.handleDirectorInstructions()
 
 	// LiveKitメッセージハンドリングは不要（SDKが自動処理）
 
@@ -522,6 +529,60 @@ func generateTestAudioBytes(audioData string) []byte {
 	return audioBytes
 }
 
+// handleDirectorInstructions Directorからの指示を処理
+func (h *HostAgent) handleDirectorInstructions() {
+	log.Println("Starting director instruction handling loop...")
+
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		case instruction := <-h.directorChan:
+			log.Printf("Processing director instruction: %s", instruction)
+
+			// Directorからの指示をOpenAIに送信
+			h.sendMessage(instruction)
+		}
+	}
+}
+
+// updateOpenAIPrompt OpenAIセッションのプロンプトを更新
+func (h *HostAgent) updateOpenAIPrompt(newPrompt string) {
+	if h.openaiConn == nil {
+		log.Println("OpenAI connection not available, skipping prompt update")
+		return
+	}
+
+	log.Printf("Updating OpenAI prompt: %s", newPrompt)
+
+	sessionUpdate := map[string]interface{}{
+		"type": "session.update",
+		"session": map[string]interface{}{
+			"type":              "realtime",
+			"instructions":      newPrompt,
+			"output_modalities": []string{"audio"},
+			"audio": map[string]interface{}{
+				"input": map[string]interface{}{
+					"turn_detection": map[string]interface{}{
+						"type":            "server_vad",
+						"idle_timeout_ms": 6000,
+					},
+				},
+				"output": map[string]interface{}{
+					"voice": "marin",
+				},
+			},
+		},
+	}
+
+	if err := h.openaiConn.WriteJSON(sessionUpdate); err != nil {
+		log.Printf("Failed to update OpenAI prompt: %v", err)
+		return
+	}
+
+	log.Println("OpenAI prompt updated successfully")
+}
+
 func (h *HostAgent) startHTTPServer() {
 	port := getEnv("PORT", "8080")
 
@@ -534,13 +595,76 @@ func (h *HostAgent) startHTTPServer() {
 		})
 	})
 
+	// Program Directorからの指示を受け取るエンドポイント
+	http.HandleFunc("/director/instruction", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var instruction struct {
+			Type    string `json:"type"`
+			Content string `json:"content"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&instruction); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("Received director instruction: %s - %s", instruction.Type, instruction.Content)
+
+		// Directorからの指示をチャンネルに送信
+		select {
+		case h.directorChan <- instruction.Content:
+			log.Printf("Director instruction queued: %s", instruction.Content)
+		default:
+			log.Printf("Director channel full, dropping instruction: %s", instruction.Content)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "received",
+		})
+	})
+
+	// Program Directorからのプロンプト更新を受け取るエンドポイント
+	http.HandleFunc("/director/prompt", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var promptUpdate struct {
+			Prompt string `json:"prompt"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&promptUpdate); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("Received prompt update from director")
+		h.currentPrompt = promptUpdate.Prompt
+
+		// OpenAIセッションのプロンプトを更新
+		if h.openaiConn != nil {
+			h.updateOpenAIPrompt(promptUpdate.Prompt)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "updated",
+		})
+	})
+
 	log.Printf("Starting HTTP server on port %s", port)
 	go func() {
 		if err := http.ListenAndServe(":"+port, nil); err != nil {
 			log.Printf("HTTP server error: %v", err)
 		}
 	}()
-	
+
 	// HTTPサーバーの起動を少し待つ
 	time.Sleep(1 * time.Second)
 }

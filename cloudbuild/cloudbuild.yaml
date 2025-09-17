@@ -17,6 +17,11 @@ steps:
       - '.'
     id: 'build-web'
 
+  # Build Director image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'infra/docker/director.Dockerfile', '-t', 'gcr.io/$PROJECT_ID/director:$_COMMIT_SHA', '.']
+    id: 'build-director'
+
   # Build Host image
   - name: 'gcr.io/cloud-builders/docker'
     args: ['build', '-f', 'infra/docker/host.Dockerfile', '-t', 'gcr.io/$PROJECT_ID/host:$_COMMIT_SHA', '.']
@@ -36,6 +41,11 @@ steps:
     id: 'push-web'
 
   - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/director:$_COMMIT_SHA']
+    waitFor: ['build-director']
+    id: 'push-director'
+
+  - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/host:$_COMMIT_SHA']
     waitFor: ['build-host']
     id: 'push-host'
@@ -51,24 +61,30 @@ steps:
         # Update API service with secret references
         gcloud run services update api --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/api:$_COMMIT_SHA \
           --set-secrets="POSTGRES_PASSWORD=postgres-password:latest,OPENAI_API_KEY=openai-api-key:latest,LIVEKIT_API_KEY=livekit-api-key:latest,LIVEKIT_API_SECRET=livekit-api-secret:latest,LIVEKIT_URL=livekit-url:latest,POSTGRES_HOST=postgres-host:latest,POSTGRES_PORT=postgres-port:latest,POSTGRES_USER=postgres-user:latest,POSTGRES_DB=postgres-db:latest" \
-          --set-env-vars="ALLOWED_ORIGIN=https://web-$PROJECT_NUMBER.asia-northeast1.run.app"
+          --set-env-vars="ALLOWED_ORIGIN=https://web-$PROJECT_NUMBER.asia-northeast1.run.app,DIRECTOR_SERVICE_URL=https://director-$PROJECT_NUMBER.asia-northeast1.run.app"
         
         # Update Web service
         gcloud run services update web --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/web:$_COMMIT_SHA \
           --set-env-vars="NEXT_PUBLIC_API_BASE=https://api-$PROJECT_NUMBER.asia-northeast1.run.app"
+        
+        # Update Director service with secret references
+        gcloud run services update director --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/director:$_COMMIT_SHA \
+          --set-secrets="POSTGRES_PASSWORD=postgres-password:latest,OPENAI_API_KEY=openai-api-key:latest,POSTGRES_HOST=postgres-host:latest,POSTGRES_PORT=postgres-port:latest,POSTGRES_USER=postgres-user:latest,POSTGRES_DB=postgres-db:latest" \
+          --set-env-vars="HOST_SERVICE_URL=https://host-$PROJECT_NUMBER.asia-northeast1.run.app,ALLOWED_ORIGIN=https://web-$PROJECT_NUMBER.asia-northeast1.run.app"
         
         # Update Host service with secret references
         gcloud run services update host --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/host:$_COMMIT_SHA \
           --set-secrets="LIVEKIT_API_KEY=livekit-api-key:latest,LIVEKIT_API_SECRET=livekit-api-secret:latest,OPENAI_API_KEY=openai-api-key:latest,LIVEKIT_WS_URL=livekit-url:latest"
         
         # LiveKit Cloud update not needed
-    waitFor: ['push-api', 'push-web', 'push-host']
+    waitFor: ['push-api', 'push-web', 'push-director', 'push-host']
     id: 'update-services'
 
 # Store images in Container Registry
 images:
   - 'gcr.io/$PROJECT_ID/api:$_COMMIT_SHA'
   - 'gcr.io/$PROJECT_ID/web:$_COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/director:$_COMMIT_SHA'
   - 'gcr.io/$PROJECT_ID/host:$_COMMIT_SHA'
 
 # Build options

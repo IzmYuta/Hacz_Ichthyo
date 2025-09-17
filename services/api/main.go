@@ -17,7 +17,8 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 	"github.com/radio24/api/internal/livekit"
-	"github.com/radio24/api/pkg/director"
+	"github.com/radio24/api/pkg/broadcast"
+	directorclient "github.com/radio24/api/pkg/director-client"
 	"github.com/radio24/api/pkg/queue"
 )
 
@@ -40,8 +41,9 @@ type Theme struct {
 
 var db *sql.DB
 var tokenGenerator *livekit.TokenGenerator
-var programDirector *director.Director
+var directorClient *directorclient.DirectorClient
 var pttQueue *queue.Queue
+var broadcastHub *broadcast.Hub
 
 func main() {
 	// 環境変数読み込み（リポジトリルートの.envファイル）
@@ -89,10 +91,12 @@ func main() {
 	livekitURL := getEnv("LIVEKIT_URL", "ws://localhost:7880")
 	tokenGenerator = livekit.NewTokenGenerator(livekitAPIKey, livekitAPISecret, livekitURL)
 
-	// Program Director初期化
-	hostChannel := make(chan string, 100)
-	programDirector = director.NewDirector(hostChannel)
-	programDirector.Start()
+	// Broadcast Hub初期化
+	broadcastHub = broadcast.NewHub()
+	go broadcastHub.Run()
+
+	// Director Client初期化
+	directorClient = directorclient.NewDirectorClient()
 
 	// PTT Queue初期化
 	pttQueue = queue.NewQueue()
@@ -108,6 +112,7 @@ func main() {
 	r.Get("/v1/now", handleNow)
 	r.Post("/v1/admin/advance", handleAdvance)
 	r.Get("/ws/ptt", handlePTTWebSocket)
+	r.Get("/ws/broadcast", handleBroadcastWebSocket)
 	r.Post("/v1/realtime/ephemeral", handleEphemeral)
 	r.Post("/v1/room/join", handleRoomJoin)
 	r.Post("/v1/submission", handleSubmission)
@@ -157,14 +162,34 @@ func handleRoomJoin(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleNow(w http.ResponseWriter, r *http.Request) {
-	nowPlaying := programDirector.GetNowPlaying()
+	nowPlaying, err := directorClient.GetNowPlaying()
+	if err != nil {
+		log.Printf("Failed to get now playing from director: %v", err)
+		http.Error(w, "Failed to get program info", http.StatusInternalServerError)
+		return
+	}
+
+	// リスナー数を更新
+	nowPlaying.Listeners = broadcastHub.GetClientCount()
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(nowPlaying)
 }
 
 func handleAdvance(w http.ResponseWriter, r *http.Request) {
-	programDirector.AdvanceSegment()
-	nowPlaying := programDirector.GetNowPlaying()
+	nowPlaying, err := directorClient.AdvanceSegment()
+	if err != nil {
+		log.Printf("Failed to advance segment: %v", err)
+		http.Error(w, "Failed to advance segment", http.StatusInternalServerError)
+		return
+	}
+
+	// リスナー数を更新
+	nowPlaying.Listeners = broadcastHub.GetClientCount()
+
+	// 全クライアントに状態変更を配信
+	broadcastHub.Broadcast("program_update", nowPlaying)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(nowPlaying)
 }
@@ -212,6 +237,9 @@ func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
 			pttQueue.Enqueue(item)
 			log.Printf("PTT enqueued: %s", msg.Text)
 
+			// Directorにキュー情報を更新
+			updateDirectorQueueInfo()
+
 			// クライアントに確認応答
 			response := map[string]interface{}{
 				"type": "ptt_queued",
@@ -220,6 +248,22 @@ func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
 			conn.WriteJSON(response)
 		}
 	}
+}
+
+func handleBroadcastWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("Broadcast WebSocket upgrade failed: %v", err)
+		return
+	}
+
+	// ユーザーIDを取得（実際の実装では認証から取得）
+	userID := r.URL.Query().Get("user_id")
+	if userID == "" {
+		userID = "anonymous"
+	}
+
+	broadcastHub.HandleWebSocket(conn, userID)
 }
 
 func corsMiddleware() func(http.Handler) http.Handler {
@@ -358,6 +402,71 @@ func createTables() {
 
 	CREATE INDEX IF NOT EXISTS submission_embed_hnsw
 	ON submission USING hnsw (embed vector_cosine_ops);
+
+	-- Program Director用テーブル
+	CREATE TABLE IF NOT EXISTS channel (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		name TEXT NOT NULL UNIQUE,
+		live BOOLEAN DEFAULT true,
+		started_at TIMESTAMPTZ DEFAULT now()
+	);
+
+	CREATE TABLE IF NOT EXISTS schedule (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		channel_id UUID REFERENCES channel(id) ON DELETE CASCADE,
+		hour INTEGER CHECK (hour >= 0 AND hour <= 23),
+		block TEXT CHECK (block IN ('OP', 'NEWS', 'QANDA', 'MUSIC', 'TOPIC_A', 'JINGLE')) NOT NULL,
+		prompt TEXT,
+		created_at TIMESTAMPTZ DEFAULT now()
+	);
+
+	CREATE TABLE IF NOT EXISTS queue (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		user_id TEXT,
+		kind TEXT CHECK (kind IN ('audio', 'text', 'phone')) NOT NULL,
+		text TEXT,
+		meta JSONB,
+		enqueued_at TIMESTAMPTZ DEFAULT now(),
+		status TEXT CHECK (status IN ('queued', 'live', 'done', 'dropped')) DEFAULT 'queued'
+	);
+
+	-- デフォルトチャンネルを作成
+	INSERT INTO channel (name, live) VALUES ('Radio-24', true) ON CONFLICT (name) DO NOTHING;
+
+	-- デフォルトスケジュールを作成（24時間分）
+	INSERT INTO schedule (channel_id, hour, block, prompt) 
+	SELECT 
+		c.id,
+		h.hour,
+		CASE 
+			WHEN h.hour BETWEEN 0 AND 5 THEN 'MUSIC'
+			WHEN h.hour BETWEEN 6 AND 8 THEN 'NEWS'
+			WHEN h.hour BETWEEN 9 AND 11 THEN 'TOPIC_A'
+			WHEN h.hour BETWEEN 12 AND 14 THEN 'QANDA'
+			WHEN h.hour BETWEEN 15 AND 17 THEN 'MUSIC'
+			WHEN h.hour BETWEEN 18 AND 20 THEN 'NEWS'
+			WHEN h.hour BETWEEN 21 AND 23 THEN 'TOPIC_A'
+		END as block,
+		CASE 
+			WHEN h.hour BETWEEN 0 AND 5 THEN '深夜の音楽を流しながら、静かに語りかけましょう。'
+			WHEN h.hour BETWEEN 6 AND 8 THEN '朝のニュースを分かりやすく伝え、一日の始まりを応援しましょう。'
+			WHEN h.hour BETWEEN 9 AND 11 THEN '午前のトピックについて、リスナーと一緒に考えましょう。'
+			WHEN h.hour BETWEEN 12 AND 14 THEN 'リスナーからの質問に答える時間です。'
+			WHEN h.hour BETWEEN 15 AND 17 THEN '午後の音楽でリラックスした時間を提供しましょう。'
+			WHEN h.hour BETWEEN 18 AND 20 THEN '夕方のニュースで一日を振り返りましょう。'
+			WHEN h.hour BETWEEN 21 AND 23 THEN '夜のトピックで深く語り合いましょう。'
+		END as prompt
+	FROM channel c
+	CROSS JOIN (
+		SELECT generate_series(0, 23) as hour
+	) h
+	WHERE c.name = 'Radio-24'
+	ON CONFLICT DO NOTHING;
+
+	-- インデックス作成
+	CREATE INDEX IF NOT EXISTS idx_schedule_channel_hour ON schedule(channel_id, hour);
+	CREATE INDEX IF NOT EXISTS idx_queue_status_enqueued ON queue(status, enqueued_at);
+	CREATE INDEX IF NOT EXISTS idx_queue_meta_priority ON queue USING GIN (meta);
 	`
 
 	_, err := db.Exec(migrationSQL)
@@ -460,4 +569,34 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func updateDirectorQueueInfo() {
+	if directorClient == nil || pttQueue == nil {
+		return
+	}
+
+	// キューから上位3件を取得
+	topItems := pttQueue.GetTopN(3)
+	topTexts := make([]string, len(topItems))
+	for i, item := range topItems {
+		if item.Text != "" {
+			topTexts[i] = item.Text
+		} else {
+			topTexts[i] = fmt.Sprintf("%s投稿", string(item.Kind))
+		}
+	}
+
+	// Director Serviceにキュー情報を更新（将来実装）
+	// 現在は直接更新できないため、WebSocketで配信のみ
+	if broadcastHub != nil {
+		// 全クライアントにキュー更新を配信
+		nowPlaying, err := directorClient.GetNowPlaying()
+		if err == nil {
+			nowPlaying.QueueCount = pttQueue.Size()
+			nowPlaying.TopQueue = topTexts
+			nowPlaying.Listeners = broadcastHub.GetClientCount()
+			broadcastHub.Broadcast("queue_update", nowPlaying)
+		}
+	}
 }
