@@ -42,7 +42,7 @@ steps:
       - |
         # Update API service with secret references
         gcloud run services update api --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/api:$_COMMIT_SHA \
-          --set-secrets="POSTGRES_PASSWORD=postgres-password:latest,OPENAI_API_KEY=openai-api-key:latest,LIVEKIT_API_KEY=livekit-api-key:latest,LIVEKIT_API_SECRET=livekit-api-secret:latest,LIVEKIT_URL=livekit-url:latest" \
+          --set-secrets="POSTGRES_PASSWORD=postgres-password:latest,OPENAI_API_KEY=openai-api-key:latest,LIVEKIT_API_KEY=livekit-api-key:latest,LIVEKIT_API_SECRET=livekit-api-secret:latest,LIVEKIT_URL=livekit-url:latest,POSTGRES_HOST=postgres-host:latest,POSTGRES_PORT=postgres-port:latest,POSTGRES_USER=postgres-user:latest,POSTGRES_DB=postgres-db:latest", \
           --set-env-vars="ALLOWED_ORIGIN=https://web-$PROJECT_NUMBER.asia-northeast1.run.app"
         
         # Update Web service
