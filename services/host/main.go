@@ -164,7 +164,7 @@ func main() {
 		},
 		currentTopic:   0,
 		dialogueMode:   false,
-		timerResetChan: make(chan struct{}, 10), // バッファを追加して複数の信号を処理可能にする
+		timerResetChan: make(chan struct{}, 1), // バッファサイズを1に制限して重複を防ぐ
 	}
 
 	// HTTPサーバーを起動（Cloud Run用）
@@ -501,6 +501,17 @@ func (h *HostAgent) run() {
 			log.Println("Resetting timer due to LiveKit upload completion")
 			ticker.Stop()
 			ticker = time.NewTicker(30 * time.Second)
+
+			// チャンネルに残っている他のリセット信号をクリア
+			for {
+				select {
+				case <-h.timerResetChan:
+					log.Println("Cleared additional timer reset signal")
+				default:
+					goto timerResetComplete
+				}
+			}
+		timerResetComplete:
 		}
 	}
 }
@@ -524,6 +535,9 @@ func (h *HostAgent) sendMessage(content string) {
 	// 生成された音声をLiveKitに送信
 	h.publishAudioToLiveKit(audioData)
 	log.Printf("TTS audio generated and published successfully")
+
+	// 音声生成完了後にタイマーリセット信号を送信（1回のみ）
+	h.sendTimerResetSignal()
 }
 
 // generateTTS OpenAI TTS APIを使用してテキストを音声に変換
@@ -591,13 +605,35 @@ func (h *HostAgent) publishAudioToLiveKit(audioData string) {
 	}
 
 	log.Printf("Audio data published via PCMWriter successfully")
+}
 
-	// LiveKitアップロード完了を通知（タイマーリセット用）
+// sendTimerResetSignal タイマーリセット信号を送信（重複を防ぐ）
+func (h *HostAgent) sendTimerResetSignal() {
+	// 非ブロッキングで送信し、チャンネルが満杯の場合は既存の信号をクリアしてから送信
 	select {
 	case h.timerResetChan <- struct{}{}:
 		log.Println("Timer reset signal sent - next script will be generated 30s after this upload")
 	default:
-		log.Println("Timer reset channel full, skipping signal")
+		// チャンネルが満杯の場合、既存の信号をクリアしてから送信
+		log.Println("Timer reset channel full, clearing existing signals and sending new one")
+		// 既存の信号をクリア
+		for {
+			select {
+			case <-h.timerResetChan:
+				// 既存の信号を削除
+			default:
+				// チャンネルが空になったら新しい信号を送信
+				select {
+				case h.timerResetChan <- struct{}{}:
+					log.Println("Timer reset signal sent after clearing channel")
+					return
+				default:
+					// まだ満杯の場合は少し待ってから再試行
+					time.Sleep(10 * time.Millisecond)
+					continue
+				}
+			}
+		}
 	}
 }
 
