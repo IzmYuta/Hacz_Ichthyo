@@ -112,8 +112,11 @@ func handleNow(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleAdvance(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Received advance request")
 	programDirector.AdvanceSegment()
+	log.Printf("AdvanceSegment completed")
 	nowPlaying := programDirector.GetNowPlaying()
+	log.Printf("GetNowPlaying completed")
 
 	// Hostエージェントに指示を送信
 	if err := programDirector.SendInstructionToHost("セグメントが進行しました。"); err != nil {
@@ -122,6 +125,7 @@ func handleAdvance(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(nowPlaying)
+	log.Printf("Response sent")
 }
 
 func handleThemeChange(w http.ResponseWriter, r *http.Request) {
