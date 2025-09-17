@@ -86,7 +86,8 @@ func main() {
 	// LiveKit Token Generator初期化
 	livekitAPIKey := getEnv("LIVEKIT_API_KEY", "devkey")
 	livekitAPISecret := getEnv("LIVEKIT_API_SECRET", "secret")
-	tokenGenerator = livekit.NewTokenGenerator(livekitAPIKey, livekitAPISecret)
+	livekitURL := getEnv("LIVEKIT_URL", "ws://localhost:7880")
+	tokenGenerator = livekit.NewTokenGenerator(livekitAPIKey, livekitAPISecret, livekitURL)
 
 	// Program Director初期化
 	hostChannel := make(chan string, 100)

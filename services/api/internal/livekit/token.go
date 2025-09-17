@@ -9,12 +9,14 @@ import (
 type TokenGenerator struct {
 	apiKey    string
 	apiSecret string
+	url       string
 }
 
-func NewTokenGenerator(apiKey, apiSecret string) *TokenGenerator {
+func NewTokenGenerator(apiKey, apiSecret, url string) *TokenGenerator {
 	return &TokenGenerator{
 		apiKey:    apiKey,
 		apiSecret: apiSecret,
+		url:       url,
 	}
 }
 
@@ -49,7 +51,7 @@ func (tg *TokenGenerator) GenerateJoinToken(identity string) (*JoinTokenResponse
 	}
 
 	return &JoinTokenResponse{
-		URL:   "ws://localhost:7880", // ローカル開発用
+		URL:   tg.url,
 		Token: token,
 		Room:  "radio-24",
 	}, nil
