@@ -9,24 +9,24 @@
 ```mermaid
 graph TB
     subgraph "Client Layer"
-        WEB[Next.js Web App<br/>Subscribe Only]
-        MOBILE[Mobile App<br/>PWA Subscribe Only]
+        WEB["Next.js Web App<br/>Subscribe Only"]
+        MOBILE["Mobile App<br/>PWA Subscribe Only"]
     end
     
     subgraph "GCP Cloud Run Services"
-        API[API Service<br/>Go<br/>PTT Queue Management]
-        HOST[Host Service<br/>Go<br/>24h Continuous Broadcast]
-        LIVEKIT[LiveKit Service<br/>WebRTC SFU<br/>Audio Distribution]
+        API["API Service<br/>Go<br/>PTT Queue Management"]
+        HOST["Host Service<br/>Go<br/>24h Continuous Broadcast"]
+        LIVEKIT["LiveKit Service<br/>WebRTC SFU<br/>Audio Distribution"]
     end
     
     subgraph "Data Layer"
-        DB[(Cloud SQL<br/>PostgreSQL + pgvector<br/>CHANNEL/SCHEDULE/QUEUE)]
-        REDIS[(Redis<br/>Cache & Queue<br/>PTT Queue)]
+        DB[("Cloud SQL<br/>PostgreSQL + pgvector<br/>CHANNEL/SCHEDULE/QUEUE")]
+        REDIS[("Redis<br/>Cache & Queue<br/>PTT Queue")]
     end
     
     subgraph "External Services"
-        OPENAI[OpenAI Realtime API<br/>Single Session]
-        STORAGE[Cloud Storage<br/>Backups & Media<br/>Recordings & Clips]
+        OPENAI["OpenAI Realtime API<br/>Single Session"]
+        STORAGE["Cloud Storage<br/>Backups & Media<br/>Recordings & Clips"]
     end
     
     
