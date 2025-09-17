@@ -13,6 +13,11 @@ provider "google" {
   region  = var.region
 }
 
+# Get current project information
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
 # Enable required APIs
 resource "google_project_service" "apis" {
   for_each = toset([
@@ -208,7 +213,7 @@ resource "google_cloud_run_v2_service" "api" {
       }
       env {
         name  = "ALLOWED_ORIGIN"
-        value = "https://web-462203182335.asia-northeast1.run.app"
+        value = "https://web-${data.google_project.current.number}.${var.region}.run.app"
       }
     }
 
@@ -248,7 +253,7 @@ resource "google_cloud_run_v2_service" "web" {
 
       env {
         name  = "NEXT_PUBLIC_API_BASE"
-        value = "https://api-462203182335.asia-northeast1.run.app"
+        value = "https://api-${data.google_project.current.number}.${var.region}.run.app"
       }
       env {
         name  = "NEXT_PUBLIC_OPENAI_REALTIME_MODEL"
