@@ -1,34 +1,28 @@
 # アーキテクチャ図
 
-## システム全体アーキテクチャ
+## システム全体アーキテクチャ（放送型）
 
 ```mermaid
 graph TB
     subgraph "Client Layer"
-        WEB[Next.js Web App<br/>Port: 3000]
-        MOBILE[Mobile App<br/>PWA]
+        WEB[Next.js Web App<br/>Port: 3000<br/>Subscribe Only]
+        MOBILE[Mobile App<br/>PWA<br/>Subscribe Only]
     end
     
     subgraph "GCP Cloud Run Services"
-        API[API Service<br/>Go<br/>Port: 8080<br/>1Gi RAM, 1 CPU<br/>Max: 10 instances]
-        HOST[Host Service<br/>Go<br/>Port: 8080<br/>1Gi RAM, 1 CPU<br/>Max: 1 instance]
-        LIVEKIT[LiveKit Service<br/>WebRTC SFU<br/>Port: 7880/7881<br/>2Gi RAM, 2 CPU<br/>Max: 3 instances]
+        API[API Service<br/>Go<br/>Port: 8080<br/>1Gi RAM, 1 CPU<br/>Max: 10 instances<br/>PTT Queue Management]
+        HOST[Host Service<br/>Go<br/>Port: 8080<br/>1Gi RAM, 1 CPU<br/>Fixed: 1 instance<br/>24h Continuous Broadcast]
+        LIVEKIT[LiveKit Service<br/>WebRTC SFU<br/>Port: 7880/7881<br/>2Gi RAM, 2 CPU<br/>Max: 3 instances<br/>Audio Distribution]
     end
     
     subgraph "Data Layer"
-        DB[(Cloud SQL<br/>PostgreSQL 15<br/>pgvector extension<br/>10GB SSD)]
-        REDIS[(Redis 7.0<br/>1GB<br/>Cache & Queue)]
+        DB[(Cloud SQL<br/>PostgreSQL 15<br/>pgvector extension<br/>10GB SSD<br/>CHANNEL/SCHEDULE/QUEUE)]
+        REDIS[(Redis 7.0<br/>1GB<br/>Cache & Queue<br/>PTT Queue)]
     end
     
     subgraph "External Services"
-        OPENAI[OpenAI Realtime API<br/>GPT-Realtime Model]
-        STORAGE[Cloud Storage<br/>Backups & Media]
-    end
-    
-    subgraph "Monitoring & CI/CD"
-        MONITORING[Cloud Monitoring<br/>Alerts & Dashboards]
-        GITHUB[GitHub Actions<br/>CI/CD Pipeline]
-        REGISTRY[Container Registry<br/>Docker Images]
+        OPENAI[OpenAI Realtime API<br/>GPT-Realtime Model<br/>Single Session]
+        STORAGE[Cloud Storage<br/>Backups & Media<br/>Recordings & Clips]
     end
     
     subgraph "Network"
@@ -36,11 +30,11 @@ graph TB
         LB[Cloud Load Balancer<br/>HTTPS Termination]
     end
     
-    %% Client connections
+    %% Client connections (Subscribe Only)
     WEB --> LB
     MOBILE --> LB
-    LB --> API
     LB --> LIVEKIT
+    LB --> API
     
     %% Service connections
     API --> DB
@@ -50,21 +44,14 @@ graph TB
     HOST --> OPENAI
     LIVEKIT --> REDIS
     
-    %% CI/CD connections
-    GITHUB --> REGISTRY
-    REGISTRY --> API
-    REGISTRY --> HOST
-    REGISTRY --> LIVEKIT
+    %% PTT Flow
+    WEB -.->|PTT Audio/Text| API
+    API -.->|Queue Management| REDIS
+    API -.->|PTT Injection| HOST
     
     %% Data connections
     API --> STORAGE
-    
-    %% Monitoring connections
-    MONITORING --> API
-    MONITORING --> HOST
-    MONITORING --> LIVEKIT
-    MONITORING --> DB
-    MONITORING --> REDIS
+    HOST --> STORAGE
     
     %% Network connections
     API --> VPC
@@ -74,40 +61,45 @@ graph TB
     VPC --> REDIS
 ```
 
-## データフロー図
+## データフロー図（放送型）
 
 ```mermaid
 sequenceDiagram
-    participant U as User
+    participant U as User (Listener)
     participant W as Web App
     participant A as API Service
-    participant H as Host Service
-    participant L as LiveKit
-    participant O as OpenAI
+    participant H as Host Agent
+    participant L as LiveKit SFU
+    participant O as OpenAI Realtime
     participant D as Database
     participant R as Redis
+    participant P as Program Director
     
-    Note over U,R: 24時間AIラジオシステムのデータフロー
+    Note over U,R: 24時間AIラジオシステム（放送型）のデータフロー
     
-    %% ユーザー接続
+    %% リスナー接続（Subscribe Only）
     U->>W: アクセス
-    W->>A: 認証・ルーム参加
-    A->>D: ユーザー情報取得
-    A->>L: LiveKitトークン発行
+    W->>A: LiveKitトークン要求
+    A->>L: トークン発行
     A->>W: トークン返却
-    W->>L: WebRTC接続
+    W->>L: WebRTC接続（Subscribe Only）
     
-    %% 音声配信
-    H->>O: Realtime API接続
-    H->>L: 音声配信開始
+    %% 常時放送（Host Agent）
+    H->>O: Realtime API接続（常時セッション）
+    H->>L: 音声配信開始（Publish）
     L->>W: 音声ストリーム配信
     W->>U: 音声再生
     
-    %% 投稿処理
+    %% 番組進行
+    P->>H: テーマ・セグメント更新
+    P->>A: 進行状態通知
+    A->>W: 番組情報配信（WebSocket）
+    
+    %% PTT投稿処理
     U->>W: PTT音声/テキスト投稿
-    W->>A: WebSocket送信
-    A->>R: キューに追加
-    A->>H: 投稿通知
+    W->>A: WebSocket送信（/ws/ptt）
+    A->>R: キューに追加（優先度付き）
+    A->>H: 投稿注入（Program Director制御）
     H->>O: 投稿内容送信
     O->>H: AI応答
     H->>L: 応答音声配信
@@ -120,23 +112,32 @@ sequenceDiagram
     A->>R: リアルタイムデータ更新
 ```
 
-## マイクロサービス間通信
+## マイクロサービス間通信（放送型）
 
 ```mermaid
 graph LR
     subgraph "API Service"
         A1[HTTP API]
-        A2[WebSocket]
+        A2[PTT WebSocket]
         A3[Database Client]
         A4[Redis Client]
         A5[LiveKit Client]
+        A6[Queue Manager]
     end
     
     subgraph "Host Service"
         H1[OpenAI Client]
         H2[LiveKit Publisher]
         H3[Audio Processor]
-        H4[Program Director]
+        H4[PCM Writer]
+        H5[Test Mode Handler]
+    end
+    
+    subgraph "Program Director"
+        P1[Schedule Manager]
+        P2[Theme Controller]
+        P3[Segment Timer]
+        P4[Queue Processor]
     end
     
     subgraph "LiveKit Service"
@@ -148,22 +149,31 @@ graph LR
     
     subgraph "Web Service"
         W1[Next.js App]
-        W2[WebSocket Client]
-        W3[WebRTC Client]
-        W4[PTT Handler]
+        W2[LiveKit Client]
+        W3[PTT Handler]
+        W4[Subscribe Only]
     end
     
     %% API Service connections
     A1 --> A3
     A1 --> A4
     A2 --> A4
-    A2 --> A5
+    A2 --> A6
+    A5 --> L1
+    A6 --> A4
     
     %% Host Service connections
     H1 --> H3
     H2 --> H3
-    H4 --> H1
+    H3 --> H4
     H4 --> H2
+    H5 --> H3
+    
+    %% Program Director connections
+    P1 --> P2
+    P2 --> P3
+    P3 --> P4
+    P4 --> H1
     
     %% LiveKit Service connections
     L1 --> L2
@@ -173,13 +183,15 @@ graph LR
     %% Web Service connections
     W1 --> W2
     W1 --> W3
+    W3 --> A2
+    W2 --> L1
     W4 --> W2
     
     %% Inter-service connections
-    A5 --> L1
     H2 --> L1
-    W3 --> L1
-    W2 --> A2
+    W2 --> L1
+    A6 --> P4
+    P2 --> A1
 ```
 
 ## セキュリティアーキテクチャ
@@ -264,63 +276,24 @@ graph TB
 graph TB
     subgraph "Development"
         DEV[Local Development<br/>docker-compose]
-        TEST[Testing<br/>GitHub Actions]
-    end
-    
-    subgraph "CI/CD Pipeline"
-        BUILD[Build Images<br/>Docker Build]
-        SCAN[Security Scan<br/>Trivy, Gosec]
-        TEST2[Integration Tests<br/>k6, Playwright]
-        DEPLOY[Deploy to GCP<br/>Cloud Run]
     end
     
     subgraph "Production Environment"
         subgraph "GCP Services"
             CR[Cloud Run<br/>API, Web, Host, LiveKit]
             SQL[Cloud SQL<br/>PostgreSQL]
-            REDIS[Redis<br/>Cache]
-            STORAGE[Cloud Storage<br/>Backups]
+            REDIS[Redis<br/>Cache & Queue]
+            STORAGE[Cloud Storage<br/>Backups & Media]
         end
-        
-        subgraph "Monitoring"
-            MONITOR[Cloud Monitoring]
-            LOGS[Cloud Logging]
-            ALERTS[Alerting Policies]
-        end
-    end
-    
-    subgraph "Deployment Strategies"
-        BG[Blue-Green<br/>Deployment]
-        CANARY[Canary<br/>Deployment]
-        ROLLBACK[Rollback<br/>Strategy]
     end
     
     %% Development flow
-    DEV --> TEST
-    TEST --> BUILD
-    
-    %% CI/CD flow
-    BUILD --> SCAN
-    SCAN --> TEST2
-    TEST2 --> DEPLOY
-    
-    %% Deployment flow
-    DEPLOY --> BG
-    DEPLOY --> CANARY
-    BG --> ROLLBACK
-    CANARY --> ROLLBACK
+    DEV --> CR
     
     %% Production flow
-    ROLLBACK --> CR
     CR --> SQL
     CR --> REDIS
     CR --> STORAGE
-    
-    %% Monitoring flow
-    CR --> MONITOR
-    SQL --> LOGS
-    REDIS --> ALERTS
-    STORAGE --> MONITOR
 ```
 
 ## スケーリング戦略
@@ -386,161 +359,6 @@ graph TB
     SCALE_UP --> ALERT
     SCALE_DOWN --> ALERT
     ALERT --> LOG
-```
-
-## 監視・ログアーキテクチャ
-
-```mermaid
-graph TB
-    subgraph "Application Services"
-        API[API Service]
-        HOST[Host Service]
-        LIVEKIT[LiveKit Service]
-        WEB[Web Service]
-    end
-    
-    subgraph "Data Sources"
-        METRICS[Application Metrics]
-        LOGS[Application Logs]
-        TRACES[Distributed Traces]
-        EVENTS[Custom Events]
-    end
-    
-    subgraph "Collection Layer"
-        AGENT[Cloud Monitoring Agent]
-        LOGGING[Cloud Logging]
-        TRACING[Cloud Trace]
-        CUSTOM[Custom Metrics]
-    end
-    
-    subgraph "Processing Layer"
-        AGGREGATION[Metric Aggregation]
-        FILTERING[Log Filtering]
-        CORRELATION[Trace Correlation]
-        ENRICHMENT[Event Enrichment]
-    end
-    
-    subgraph "Storage Layer"
-        METRIC_STORE[Metric Store]
-        LOG_STORE[Log Store]
-        TRACE_STORE[Trace Store]
-        EVENT_STORE[Event Store]
-    end
-    
-    subgraph "Analysis Layer"
-        DASHBOARDS[Dashboards]
-        ALERTS[Alerting]
-        REPORTS[Reports]
-        ANALYTICS[Analytics]
-    end
-    
-    %% Data flow
-    API --> METRICS
-    HOST --> LOGS
-    LIVEKIT --> TRACES
-    WEB --> EVENTS
-    
-    %% Collection flow
-    METRICS --> AGENT
-    LOGS --> LOGGING
-    TRACES --> TRACING
-    EVENTS --> CUSTOM
-    
-    %% Processing flow
-    AGENT --> AGGREGATION
-    LOGGING --> FILTERING
-    TRACING --> CORRELATION
-    CUSTOM --> ENRICHMENT
-    
-    %% Storage flow
-    AGGREGATION --> METRIC_STORE
-    FILTERING --> LOG_STORE
-    CORRELATION --> TRACE_STORE
-    ENRICHMENT --> EVENT_STORE
-    
-    %% Analysis flow
-    METRIC_STORE --> DASHBOARDS
-    LOG_STORE --> ALERTS
-    TRACE_STORE --> REPORTS
-    EVENT_STORE --> ANALYTICS
-```
-
-## 災害復旧アーキテクチャ
-
-```mermaid
-graph TB
-    subgraph "Primary Region"
-        subgraph "Production Services"
-            API1[API Service]
-            HOST1[Host Service]
-            LIVEKIT1[LiveKit Service]
-            WEB1[Web Service]
-        end
-        
-        subgraph "Data Stores"
-            DB1[(Primary Database)]
-            REDIS1[(Primary Redis)]
-            STORAGE1[(Primary Storage)]
-        end
-    end
-    
-    subgraph "Backup Region"
-        subgraph "Standby Services"
-            API2[API Service]
-            HOST2[Host Service]
-            LIVEKIT2[LiveKit Service]
-            WEB2[Web Service]
-        end
-        
-        subgraph "Backup Data"
-            DB2[(Backup Database)]
-            REDIS2[(Backup Redis)]
-            STORAGE2[(Backup Storage)]
-        end
-    end
-    
-    subgraph "Disaster Recovery"
-        BACKUP[Automated Backups]
-        REPLICATION[Data Replication]
-        FAILOVER[Automatic Failover]
-        RESTORE[Point-in-Time Restore]
-    end
-    
-    subgraph "Recovery Procedures"
-        DETECTION[Failure Detection]
-        NOTIFICATION[Alert Notification]
-        SWITCHOVER[Service Switchover]
-        VALIDATION[Recovery Validation]
-    end
-    
-    %% Primary region flow
-    API1 --> DB1
-    HOST1 --> REDIS1
-    LIVEKIT1 --> STORAGE1
-    WEB1 --> API1
-    
-    %% Backup region flow
-    API2 --> DB2
-    HOST2 --> REDIS2
-    LIVEKIT2 --> STORAGE2
-    WEB2 --> API2
-    
-    %% Disaster recovery flow
-    DB1 --> BACKUP
-    REDIS1 --> REPLICATION
-    STORAGE1 --> FAILOVER
-    BACKUP --> RESTORE
-    
-    %% Recovery procedures flow
-    BACKUP --> DETECTION
-    REPLICATION --> NOTIFICATION
-    FAILOVER --> SWITCHOVER
-    RESTORE --> VALIDATION
-    
-    %% Cross-region connections
-    DB1 -.-> DB2
-    REDIS1 -.-> REDIS2
-    STORAGE1 -.-> STORAGE2
 ```
 
 このアーキテクチャ図により、24時間AIラジオシステムの全体像と各コンポーネント間の関係を視覚的に理解できます。

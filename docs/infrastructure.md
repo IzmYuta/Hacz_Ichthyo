@@ -4,39 +4,39 @@
 
 24時間AIラジオシステムのインフラ構成について説明します。このシステムはGoogle Cloud Platform (GCP)上で動作し、マイクロサービスアーキテクチャを採用しています。
 
-## アーキテクチャ概要
+## アーキテクチャ概要（放送型）
 
 ```mermaid
 graph TB
     subgraph "Client Layer"
-        WEB[Next.js Web App]
-        MOBILE[Mobile App]
+        WEB[Next.js Web App<br/>Subscribe Only]
+        MOBILE[Mobile App<br/>PWA Subscribe Only]
     end
     
     subgraph "GCP Cloud Run Services"
-        API[API Service<br/>Go]
-        HOST[Host Service<br/>Go]
-        LIVEKIT[LiveKit Service<br/>WebRTC SFU]
+        API[API Service<br/>Go<br/>PTT Queue Management]
+        HOST[Host Service<br/>Go<br/>24h Continuous Broadcast]
+        LIVEKIT[LiveKit Service<br/>WebRTC SFU<br/>Audio Distribution]
     end
     
     subgraph "Data Layer"
-        DB[(Cloud SQL<br/>PostgreSQL + pgvector)]
-        REDIS[(Redis<br/>Cache & Queue)]
+        DB[(Cloud SQL<br/>PostgreSQL + pgvector<br/>CHANNEL/SCHEDULE/QUEUE)]
+        REDIS[(Redis<br/>Cache & Queue<br/>PTT Queue)]
     end
     
     subgraph "External Services"
-        OPENAI[OpenAI Realtime API]
-        STORAGE[Cloud Storage<br/>Backups & Media]
+        OPENAI[OpenAI Realtime API<br/>Single Session]
+        STORAGE[Cloud Storage<br/>Backups & Media<br/>Recordings & Clips]
     end
     
-    subgraph "Monitoring & CI/CD"
-        MONITORING[Cloud Monitoring]
-        GITHUB[GitHub Actions]
-        REGISTRY[Container Registry]
-    end
     
+    %% Client connections (Subscribe Only)
+    WEB --> LIVEKIT
+    MOBILE --> LIVEKIT
     WEB --> API
     MOBILE --> API
+    
+    %% Service connections
     API --> DB
     API --> REDIS
     API --> LIVEKIT
@@ -44,15 +44,13 @@ graph TB
     HOST --> OPENAI
     LIVEKIT --> REDIS
     
-    GITHUB --> REGISTRY
-    REGISTRY --> API
-    REGISTRY --> HOST
-    REGISTRY --> LIVEKIT
+    %% PTT Flow
+    WEB -.->|PTT Audio/Text| API
+    API -.->|Queue Management| REDIS
     
+    %% Data connections
     API --> STORAGE
-    MONITORING --> API
-    MONITORING --> HOST
-    MONITORING --> LIVEKIT
+    HOST --> STORAGE
 ```
 
 ## サービス構成
@@ -72,15 +70,17 @@ graph TB
 
 ### 2. Host Service (Go)
 
-- **役割**: AI DJの常時発話サービス
+- **役割**: AI DJの常時発話サービス（放送型の中核）
 - **ポート**: 8080
 - **リソース**: 1Gi RAM, 1 CPU
-- **最大インスタンス**: 1 (常時起動)
+- **最大インスタンス**: 1 (常時起動、固定)
 - **機能**:
-  - OpenAI Realtime APIとの接続
-  - 24時間連続音声生成
-  - LiveKitへの音声配信
-  - 番組進行の実行
+  - OpenAI Realtime APIとの常時接続（単一セッション）
+  - 24時間連続音声生成・配信
+  - LiveKitへの音声配信（Publish）
+  - PCM音声処理・音量調整
+  - テストモード対応（OpenAI接続失敗時）
+  - 自動再接続機能
 
 ### 3. LiveKit Service (WebRTC SFU)
 
@@ -96,15 +96,17 @@ graph TB
 
 ### 4. Web Service (Next.js)
 
-- **役割**: フロントエンドアプリケーション
+- **役割**: フロントエンドアプリケーション（放送型対応）
 - **ポート**: 3000
 - **リソース**: 512Mi RAM, 1 CPU
 - **最大インスタンス**: 5
 - **機能**:
   - ユーザーインターフェース
-  - リアルタイム音声再生
+  - LiveKit接続（Subscribe Only）
   - PTT (Push-to-Talk) 機能
   - 投稿・コメント機能
+  - 番組進行情報表示
+  - テーマ切替UI
 
 ## データベース構成
 
@@ -164,12 +166,12 @@ USING hnsw (embed vector_cosine_ops);
 
 ## デプロイメント構成
 
-### CI/CD Pipeline
+### デプロイメント方法
 
-- **プラットフォーム**: GitHub Actions
+- **プラットフォーム**: Cloud Build
 - **レジストリ**: Google Container Registry
-- **デプロイ戦略**: Blue-Green Deployment
-- **自動テスト**: 単体・統合・E2Eテスト
+- **デプロイ戦略**: 直接デプロイ
+- **テスト**: ローカルテスト
 
 ### 環境変数
 
@@ -195,14 +197,7 @@ NEXT_PUBLIC_API_BASE=https://api-***.run.app
 NEXT_PUBLIC_OPENAI_REALTIME_MODEL=gpt-realtime
 ```
 
-## 監視・運用
-
-### Cloud Monitoring
-
-- **アラート**: エラー率、レイテンシ、リソース使用率
-- **ログ**: 構造化ログの集約・分析
-- **メトリクス**: カスタムメトリクスの収集
-- **ダッシュボード**: リアルタイム監視
+## 運用・保守
 
 ### バックアップ
 
@@ -212,9 +207,9 @@ NEXT_PUBLIC_OPENAI_REALTIME_MODEL=gpt-realtime
 
 ### セキュリティ
 
-- **脆弱性スキャン**: Trivy, Gosec, npm audit
-- **シークレット検出**: ハードコードされた秘密の検出
-- **コンプライアンス**: 定期的なセキュリティチェック
+- **シークレット管理**: Cloud Secret Manager
+- **アクセス制御**: IAMによる権限管理
+- **ネットワーク**: VPC内での通信
 
 ## スケーリング戦略
 
@@ -237,11 +232,10 @@ NEXT_PUBLIC_OPENAI_REALTIME_MODEL=gpt-realtime
 - **CPU割り当て**: 用途に応じた適切な割り当て
 - **メモリ使用量**: 効率的なメモリ管理
 
-### 使用量監視
+### コスト管理
 
-- **コスト分析**: 月次コストレポート
+- **リソース最適化**: 適切なインスタンスサイズ設定
 - **未使用リソース**: 定期的なクリーンアップ
-- **最適化提案**: 自動的な推奨事項
 
 ## 災害復旧
 
@@ -256,7 +250,6 @@ NEXT_PUBLIC_OPENAI_REALTIME_MODEL=gpt-realtime
 1. バックアップからのデータベース復旧
 2. 最新のコンテナイメージでのサービス再デプロイ
 3. 設定の復元と検証
-4. 監視の再設定
 
 ## セキュリティ考慮事項
 
@@ -276,22 +269,20 @@ NEXT_PUBLIC_OPENAI_REALTIME_MODEL=gpt-realtime
 
 ### デプロイメント
 
-1. コードのmainブランチへのプッシュ
-2. GitHub Actionsによる自動テスト
-3. コンテナイメージのビルド・プッシュ
-4. Cloud Runへの自動デプロイ
-5. ヘルスチェック・監視の確認
+1. ローカルでのテスト実行
+2. Cloud Buildでのコンテナイメージビルド
+3. Cloud Runへのデプロイ
+4. ヘルスチェックの確認
 
 ### トラブルシューティング
 
 - **ログ確認**: Cloud Loggingでの詳細ログ
-- **メトリクス**: Cloud Monitoringでのパフォーマンス分析
-- **アラート**: 設定されたアラートの確認
+- **ヘルスチェック**: 各サービスのヘルスエンドポイント確認
 - **ロールバック**: 前バージョンへの迅速な復旧
 
 ### メンテナンス
 
-- **定期更新**: 依存関係の自動更新
+- **定期更新**: 依存関係の手動更新
 - **セキュリティパッチ**: 緊急パッチの適用
 - **パフォーマンス**: 定期的な最適化
 

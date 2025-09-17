@@ -2,17 +2,26 @@
 
 ## 概要
 
-24時間連続でAI DJが放送を行うラジオシステムです。OpenAI Realtime APIとLiveKitを使用してリアルタイム音声配信を実現します。
+24時間連続でAI DJが放送を行うラジオシステムです。放送型アーキテクチャを採用し、Host Agentが常時発話し、視聴者はLiveKitを経由して音声を購読します。
 
-## アーキテクチャ
+## アーキテクチャ（放送型）
 
-- **フロントエンド**: Next.js (React)
-- **バックエンド**: Go (API + Host)
+- **フロントエンド**: Next.js (React) - Subscribe Only
+- **バックエンド**: Go (API + Host Agent)
 - **リアルタイム通信**: LiveKit (WebRTC SFU)
+- **AI音声生成**: OpenAI Realtime API (単一セッション)
 - **データベース**: PostgreSQL + pgvector
-- **キャッシュ**: Redis
+- **キャッシュ・キュー**: Redis
 - **インフラ**: Google Cloud Platform
-- **CI/CD**: GitHub Actions + Cloud Build
+- **デプロイ**: Cloud Build
+
+## 主要機能
+
+- **24時間連続放送**: Host Agentが常時発話
+- **PTT投稿**: Push-to-Talk機能によるリスナー参加
+- **番組進行管理**: Program Directorによる自動進行
+- **音声配信**: LiveKitによる高品質音声ストリーミング
+- **ベクトル検索**: 投稿内容の類似検索
 
 ## セットアップ
 
@@ -214,23 +223,22 @@ gcloud builds submit --config cloudbuild/cloudbuild-test.yaml
 
 ## デプロイメント
 
-### 自動デプロイ
+### デプロイ
 
-mainブランチへのプッシュで自動的にデプロイされます：
+手動でデプロイを実行します：
 
-1. **テスト**: GitHub Actionsでテストを実行
+1. **テスト**: ローカルでテストを実行
 2. **ビルド**: Cloud BuildでDockerイメージをビルド
-3. **デプロイ**: Terraformでインフラを更新、Cloud Runにデプロイ
+3. **デプロイ**: Cloud Runにデプロイ
 
 ### 手動デプロイ
 
 ```bash
 # Cloud Buildでデプロイ
-gcloud builds submit --config cloudbuild/cloudbuild.yaml \
-  --substitutions _COMMIT_SHA=$(git rev-parse HEAD)
+gcloud builds submit --config cloudbuild/cloudbuild.yaml
 ```
 
-## 監視
+## サービス確認
 
 ### サービスURL
 
@@ -270,7 +278,3 @@ gcloud logging read "resource.type=cloud_run_revision" --limit=100
 # Cloud Buildログ
 gcloud builds log <build-id>
 ```
-
-## ライセンス
-
-MIT License
