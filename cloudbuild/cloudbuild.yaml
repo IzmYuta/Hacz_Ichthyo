@@ -41,13 +41,15 @@ steps:
       - '-c'
       - |
         # Update API service
-        gcloud run services update api --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/api:$_COMMIT_SHA
+        gcloud run services update api --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/api:$_COMMIT_SHA \
+          --set-env-vars="POSTGRES_PASSWORD=$_POSTGRES_PASSWORD,OPENAI_API_KEY=$_OPENAI_API_KEY,LIVEKIT_API_KEY=$_LIVEKIT_API_KEY,LIVEKIT_API_SECRET=$_LIVEKIT_API_SECRET"
         
         # Update Web service
         gcloud run services update web --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/web:$_COMMIT_SHA
         
         # Update Host service
-        gcloud run services update host --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/host:$_COMMIT_SHA
+        gcloud run services update host --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/host:$_COMMIT_SHA \
+          --set-env-vars="LIVEKIT_API_KEY=$_LIVEKIT_API_KEY,LIVEKIT_API_SECRET=$_LIVEKIT_API_SECRET"
         
         # LiveKit Cloud update not needed
     waitFor: ['push-api', 'push-web', 'push-host']
@@ -66,6 +68,10 @@ options:
 # Substitution variables
 substitutions:
   _COMMIT_SHA: 'latest'
+  _POSTGRES_PASSWORD: ''
+  _OPENAI_API_KEY: ''
+  _LIVEKIT_API_KEY: ''
+  _LIVEKIT_API_SECRET: ''
 
 # Timeout
 timeout: '1200s'
