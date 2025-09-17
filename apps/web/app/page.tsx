@@ -384,76 +384,85 @@ export default function OnAir() {
     if (dialogueActive && mediaRecorderRef.current && isRecording) {
       // 対話モード中は音声録音を停止して送信
       return new Promise<void>((resolve) => {
-        mediaRecorderRef.current!.onstop = async () => {
-          try {
-            const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-            
-            if (audioBlob.size > 0) {
-              // WebM音声をPCM16に変換（効率的な処理）
-              const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-              const audioContext = new AudioContextClass();
-              const arrayBuffer = await audioBlob.arrayBuffer();
-              const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-              
-              // モノラル、24kHz、PCM16に変換
-              const sampleRate = 24000;
-              const length = Math.floor(audioBuffer.length * sampleRate / audioBuffer.sampleRate);
-              const pcm16Data = new Int16Array(length);
-              
-              // 効率的なリサンプリングとPCM16変換
-              const sourceData = audioBuffer.getChannelData(0); // モノラル
-              const ratio = audioBuffer.sampleRate / sampleRate;
-              for (let i = 0; i < length; i++) {
-                const sourceIndex = Math.floor(i * ratio);
-                const sample = sourceData[sourceIndex] || 0;
-                pcm16Data[i] = Math.round(sample * 32767); // 簡素化された変換
-              }
-              
-              // 音声の長さをチェック（25ms = 600サンプル）
-              const durationMs = (pcm16Data.length / sampleRate) * 1000;
-              console.log(`Audio duration: ${durationMs.toFixed(2)} ms (${pcm16Data.length} samples)`);
-              
-              if (durationMs < 25) {
-                console.log('Audio too short (< 25ms), skipping send to avoid buffer errors');
-                return;
-              }
-              
-              // Base64エンコード
-              const base64Audio = btoa(String.fromCharCode(...new Uint8Array(pcm16Data.buffer)));
-              
-              const message = {
-                type: 'input_audio_buffer.append',
-                audio: base64Audio
-              };
-              ws.send(JSON.stringify(message));
-              
-              // 音声をコミット
-              const commitMessage = {
-                type: 'input_audio_buffer.commit'
-              };
-              ws.send(JSON.stringify(commitMessage));
-              
-              console.log(`PTT stopped for dialogue - audio sent to AI DJ (${pcm16Data.length} samples, ${durationMs.toFixed(2)}ms, ${(audioBlob.size / 1024).toFixed(2)}KB, efficient mode)`);
-            } else {
-              console.log('No audio data recorded');
-            }
-            
-            // ストリームを停止
-            if (mediaRecorderRef.current && mediaRecorderRef.current.stream) {
-              mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-            }
-            
-            setIsRecording(false);
-            resolve();
-          } catch (error) {
-            console.error('Failed to process audio:', error);
-            setIsRecording(false);
-            resolve();
-          }
-        };
-        
+        // 既存のonstopハンドラーをクリアしてから新しいものを設定
         if (mediaRecorderRef.current) {
+          mediaRecorderRef.current.onstop = null;
+          
+          mediaRecorderRef.current.onstop = async () => {
+            try {
+              const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+              
+              if (audioBlob.size > 0) {
+                // WebM音声をPCM16に変換（効率的な処理）
+                const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+                const audioContext = new AudioContextClass();
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                
+                // モノラル、24kHz、PCM16に変換
+                const sampleRate = 24000;
+                const length = Math.floor(audioBuffer.length * sampleRate / audioBuffer.sampleRate);
+                const pcm16Data = new Int16Array(length);
+                
+                // 効率的なリサンプリングとPCM16変換
+                const sourceData = audioBuffer.getChannelData(0); // モノラル
+                const ratio = audioBuffer.sampleRate / sampleRate;
+                for (let i = 0; i < length; i++) {
+                  const sourceIndex = Math.floor(i * ratio);
+                  const sample = sourceData[sourceIndex] || 0;
+                  pcm16Data[i] = Math.round(sample * 32767); // 簡素化された変換
+                }
+                
+                // 音声の長さをチェック（25ms = 600サンプル）
+                const durationMs = (pcm16Data.length / sampleRate) * 1000;
+                console.log(`Audio duration: ${durationMs.toFixed(2)} ms (${pcm16Data.length} samples)`);
+                
+                if (durationMs < 25) {
+                  console.log('Audio too short (< 25ms), skipping send to avoid buffer errors');
+                  setIsRecording(false);
+                  resolve();
+                  return;
+                }
+                
+                // Base64エンコード（スタックオーバーフローを防ぐため安全な方法を使用）
+                const uint8Array = new Uint8Array(pcm16Data.buffer);
+                const base64Audio = btoa(Array.from(uint8Array, byte => String.fromCharCode(byte)).join(''));
+                
+                const message = {
+                  type: 'input_audio_buffer.append',
+                  audio: base64Audio
+                };
+                ws.send(JSON.stringify(message));
+                
+                // 音声をコミット
+                const commitMessage = {
+                  type: 'input_audio_buffer.commit'
+                };
+                ws.send(JSON.stringify(commitMessage));
+                
+                console.log(`PTT stopped for dialogue - audio sent to AI DJ (${pcm16Data.length} samples, ${durationMs.toFixed(2)}ms, ${(audioBlob.size / 1024).toFixed(2)}KB, efficient mode)`);
+              } else {
+                console.log('No audio data recorded');
+              }
+              
+              // ストリームを停止
+              if (mediaRecorderRef.current && mediaRecorderRef.current.stream) {
+                mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+              }
+              
+              setIsRecording(false);
+              resolve();
+            } catch (error) {
+              console.error('Failed to process audio:', error);
+              setIsRecording(false);
+              resolve();
+            }
+          };
+          
           mediaRecorderRef.current.stop();
+        } else {
+          setIsRecording(false);
+          resolve();
         }
       });
     } else {

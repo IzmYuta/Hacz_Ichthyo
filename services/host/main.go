@@ -162,7 +162,7 @@ func main() {
 		},
 		currentTopic:   0,
 		dialogueMode:   false,
-		timerResetChan: make(chan struct{}),
+		timerResetChan: make(chan struct{}, 10), // バッファを追加して複数の信号を処理可能にする
 	}
 
 	// HTTPサーバーを起動（Cloud Run用）
@@ -176,12 +176,6 @@ func main() {
 	} else {
 		log.Println("Successfully connected to LiveKit")
 	}
-
-	// OpenAI Realtime接続（将来のPTT実装用にコメントアウト）
-	// if err := agent.connectToOpenAI(); err != nil {
-	// 	log.Printf("Failed to connect to OpenAI: %v", err)
-	// 	// OpenAI接続に失敗しても続行（テストモードで動作）
-	// }
 
 	// キュー監視ループを開始
 	go agent.monitorQueue()
@@ -499,51 +493,6 @@ func (h *HostAgent) run() {
 	}
 }
 
-// handleOpenAIMessages OpenAI Realtimeメッセージ処理（将来のPTT実装用にコメントアウト）
-// func (h *HostAgent) handleOpenAIMessages() {
-// 	if h.openaiConn == nil {
-// 		return
-// 	}
-
-// 	log.Println("Starting OpenAI message handling loop...")
-// 	for {
-// 		select {
-// 		case <-h.ctx.Done():
-// 			return
-// 		default:
-// 			var msg map[string]interface{}
-// 			if err := h.openaiConn.ReadJSON(&msg); err != nil {
-// 				log.Printf("OpenAI connection error: %v", err)
-// 				h.reconnectOpenAI()
-// 				return
-// 			}
-
-// 			log.Printf("Received OpenAI message: %+v", msg)
-
-// 			// 音声出力をLiveKitにPublish
-// 			if msgType, ok := msg["type"].(string); ok {
-// 				switch msgType {
-// 				case "response.output_audio.delta":
-// 					if audioData, ok := msg["delta"].(string); ok {
-// 						log.Printf("Received audio delta, length: %d", len(audioData))
-// 						h.publishAudioToLiveKit(audioData)
-// 					}
-// 				case "response.done":
-// 					log.Println("OpenAI response completed")
-// 				case "session.created":
-// 					log.Println("OpenAI session created")
-// 				case "session.updated":
-// 					log.Println("OpenAI session updated")
-// 				case "conversation.item.added", "conversation.item.done", "response.output_audio.done", "response.output_audio_transcript.done", "response.content_part.done", "response.output_item.done", "rate_limits.updated":
-// 					// これらのメッセージは無視
-// 				default:
-// 					log.Printf("Unhandled message type: %s", msgType)
-// 				}
-// 			}
-// 		}
-// 	}
-// }
-
 func (h *HostAgent) sendMessage(content string) {
 	apiKey := getEnv("OPENAI_API_KEY", "")
 	if apiKey == "" || apiKey == "your-openai-api-key" || apiKey == "test-mode" {
@@ -746,23 +695,6 @@ func (h *HostAgent) reconnectLiveKit() {
 	})
 }
 
-// reconnectOpenAI OpenAI Realtime再接続（将来のPTT実装用にコメントアウト）
-// func (h *HostAgent) reconnectOpenAI() {
-// 	if h.reconnectTimer != nil {
-// 		h.reconnectTimer.Stop()
-// 	}
-
-// 	h.reconnectTimer = time.AfterFunc(5*time.Second, func() {
-// 		log.Println("Attempting to reconnect to OpenAI...")
-// 		if err := h.connectToOpenAI(); err != nil {
-// 			log.Printf("Reconnection failed: %v", err)
-// 			h.reconnectOpenAI() // 再試行
-// 		} else {
-// 			log.Println("Reconnected to OpenAI")
-// 		}
-// 	})
-// }
-
 // generateAndSpeakScript 台本を生成してTTSで読み上げ
 func (h *HostAgent) generateAndSpeakScript() {
 	// 現在のトピックを取得
@@ -787,43 +719,6 @@ func (h *HostAgent) generateAndSpeakScript() {
 	// 生成された台本をTTSで読み上げ
 	h.sendMessage(script)
 }
-
-// updateOpenAIPrompt OpenAIセッションのプロンプトを更新（将来のPTT実装用にコメントアウト）
-// func (h *HostAgent) updateOpenAIPrompt(newPrompt string) {
-// 	if h.openaiConn == nil {
-// 		log.Println("OpenAI connection not available, skipping prompt update")
-// 		return
-// 	}
-
-// 	log.Printf("Updating OpenAI prompt: %s", newPrompt)
-
-// 	sessionUpdate := map[string]interface{}{
-// 		"type": "session.update",
-// 		"session": map[string]interface{}{
-// 			"type":              "realtime",
-// 			"instructions":      newPrompt,
-// 			"output_modalities": []string{"audio"},
-// 			"audio": map[string]interface{}{
-// 				"input": map[string]interface{}{
-// 					"turn_detection": map[string]interface{}{
-// 						"type":            "server_vad",
-// 						"idle_timeout_ms": 6000,
-// 					},
-// 				},
-// 				"output": map[string]interface{}{
-// 					"voice": "marin",
-// 				},
-// 			},
-// 		},
-// 	}
-
-// 	if err := h.openaiConn.WriteJSON(sessionUpdate); err != nil {
-// 		log.Printf("Failed to update OpenAI prompt: %v", err)
-// 		return
-// 	}
-
-// 	log.Println("OpenAI prompt updated successfully")
-// }
 
 func (h *HostAgent) startHTTPServer() {
 	port := getEnv("HOST_PORT", "8080")
