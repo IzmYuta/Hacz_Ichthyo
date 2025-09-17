@@ -33,5 +33,9 @@ COPY --from=builder /app/host .
 # .envファイル用のディレクトリを作成（ボリュームマウント用）
 RUN mkdir -p /app
 
+# Cloud Run用のポート設定
+ENV PORT=8080
+EXPOSE 8080
+
 # 実行
 CMD ["./host"]

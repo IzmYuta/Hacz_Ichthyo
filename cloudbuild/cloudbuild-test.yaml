@@ -1,0 +1,54 @@
+steps:
+  # Run Go tests
+  - name: 'golang:1.23'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        cd services/api
+        go test ./...
+    id: 'test-api'
+
+  - name: 'golang:1.23'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        cd services/host
+        go test ./...
+    id: 'test-host'
+
+  # Run Node.js tests
+  - name: 'node:20'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        cd apps/web
+        npm install -g pnpm
+        pnpm install
+        pnpm test --passWithNoTests
+        pnpm lint
+    id: 'test-web'
+
+  # Security scan with Trivy
+  - name: 'aquasec/trivy:latest'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Scan Go modules
+        trivy fs --security-checks vuln services/api/
+        trivy fs --security-checks vuln services/host/
+        
+        # Scan Node.js modules
+        trivy fs --security-checks vuln apps/web/
+    id: 'security-scan'
+
+# Build options
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_4'
+
+# Timeout
+timeout: '600s'

@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -126,6 +128,9 @@ func main() {
 		cancel: cancel,
 	}
 
+	// HTTPサーバーを起動（Cloud Run用）
+	agent.startHTTPServer()
+
 	// LiveKit Room接続
 	log.Println("Attempting to connect to LiveKit...")
 	if err := agent.connectToLiveKit(); err != nil {
@@ -137,7 +142,8 @@ func main() {
 
 	// OpenAI Realtime接続
 	if err := agent.connectToOpenAI(); err != nil {
-		log.Fatal("Failed to connect to OpenAI:", err)
+		log.Printf("Failed to connect to OpenAI: %v", err)
+		// OpenAI接続に失敗しても続行（テストモードで動作）
 	}
 
 	// メインループ
@@ -208,7 +214,9 @@ func (h *HostAgent) connectToLiveKit() error {
 
 func (h *HostAgent) connectToOpenAI() error {
 	apiKey := getEnv("OPENAI_API_KEY", "")
-	log.Printf("OpenAI API key: %s", apiKey[:10]+"...") // 最初の10文字だけ表示
+	if apiKey != "" {
+		log.Printf("OpenAI API key: %s", apiKey[:10]+"...") // 最初の10文字だけ表示
+	}
 
 	if apiKey == "" || apiKey == "your-openai-api-key" || apiKey == "test-mode" {
 		log.Println("OpenAI API key not set, using test mode")
@@ -512,6 +520,29 @@ func generateTestAudioBytes(audioData string) []byte {
 	}
 
 	return audioBytes
+}
+
+func (h *HostAgent) startHTTPServer() {
+	port := getEnv("PORT", "8080")
+
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":    "healthy",
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
+	})
+
+	log.Printf("Starting HTTP server on port %s", port)
+	go func() {
+		if err := http.ListenAndServe(":"+port, nil); err != nil {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
+	
+	// HTTPサーバーの起動を少し待つ
+	time.Sleep(1 * time.Second)
 }
 
 func getEnv(key, defaultValue string) string {

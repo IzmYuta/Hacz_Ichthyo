@@ -117,6 +117,21 @@ services:
       - livekit
     restart: unless-stopped
 
+  # Terraform service for infrastructure management
+  terraform:
+    image: hashicorp/terraform:1.6
+    container_name: radio24-terraform
+    working_dir: /workspace
+    volumes:
+      - ./terraform:/workspace
+      - ./gcp-key.json:/workspace/gcp-key.json:ro
+      - terraform_data:/workspace/.terraform
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/workspace/gcp-key.json
+    profiles:
+      - terraform
+
 volumes:
   postgres_data:
   redis_data:
+  terraform_data:

@@ -1,0 +1,9 @@
+project_id = "radio24-project"
+region     = "asia-northeast1"
+
+# Sensitive variables - set these via environment variables or terraform.tfvars
+# postgres_password = "your-secure-password"
+# openai_api_key    = "your-openai-api-key"
+# livekit_api_key   = "your-livekit-api-key"
+# livekit_api_secret = "your-livekit-api-secret"
+# livekit_url       = "wss://your-livekit-url"

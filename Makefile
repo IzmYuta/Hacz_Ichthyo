@@ -390,17 +390,80 @@ check: format lint test ## コード品質チェックを実行
 	@echo "✅ コード品質チェックが完了しました"
 
 # =============================================================================
+# Terraform
+# =============================================================================
+
+.PHONY: tf-init
+tf-init: ## Terraformを初期化
+	@echo "🔧 Terraformを初期化中..."
+	$(DOCKER_COMPOSE) --profile terraform run --rm --entrypoint="" terraform terraform init
+	@echo "✅ Terraformの初期化が完了しました"
+
+.PHONY: tf-plan
+tf-plan: ## Terraformプランを実行
+	@echo "📋 Terraformプランを実行中..."
+	$(DOCKER_COMPOSE) --profile terraform run --rm --entrypoint="" terraform terraform plan
+	@echo "✅ Terraformプランが完了しました"
+
+.PHONY: tf-apply
+tf-apply: ## Terraformを適用
+	@echo "🚀 Terraformを適用中..."
+	$(DOCKER_COMPOSE) --profile terraform run --rm --entrypoint="" terraform terraform apply -auto-approve
+	@echo "✅ Terraformの適用が完了しました"
+
+.PHONY: tf-destroy
+tf-destroy: ## Terraformリソースを削除
+	@echo "🗑️  Terraformリソースを削除中..."
+	@echo "⚠️  この操作は本番環境のリソースを削除します。続行しますか？ (y/N)"
+	@read -r confirm && [ "$$confirm" = "y" ] || exit 1
+	$(DOCKER_COMPOSE) --profile terraform run --rm --entrypoint="" terraform terraform destroy -auto-approve
+	@echo "✅ Terraformリソースの削除が完了しました"
+
+.PHONY: tf-output
+tf-output: ## Terraformの出力を表示
+	@echo "📊 Terraformの出力:"
+	$(DOCKER_COMPOSE) --profile terraform run --rm --entrypoint="" terraform terraform output
+
+.PHONY: tf-validate
+tf-validate: ## Terraformの設定を検証
+	@echo "✅ Terraformの設定を検証中..."
+	$(DOCKER_COMPOSE) --profile terraform run --rm --entrypoint="" terraform terraform validate
+	@echo "✅ Terraformの設定が有効です"
+
+.PHONY: tf-fmt
+tf-fmt: ## Terraformファイルをフォーマット
+	@echo "🎨 Terraformファイルをフォーマット中..."
+	$(DOCKER_COMPOSE) --profile terraform run --rm --entrypoint="" terraform terraform fmt -recursive
+	@echo "✅ Terraformファイルのフォーマットが完了しました"
+
+# =============================================================================
+# Cloud Build
+# =============================================================================
+
+.PHONY: cb-test
+cb-test: ## Cloud Buildでテストを実行
+	@echo "🧪 Cloud Buildでテストを実行中..."
+	gcloud builds submit --config cloudbuild/cloudbuild-test.yaml
+	@echo "✅ Cloud Buildテストが完了しました"
+
+.PHONY: cb-deploy
+cb-deploy: ## Cloud Buildでデプロイを実行
+	@echo "🚀 Cloud Buildでデプロイを実行中..."
+	gcloud builds submit --config cloudbuild/cloudbuild.yaml
+	@echo "✅ Cloud Buildデプロイが完了しました"
+
+# =============================================================================
 # デプロイ
 # =============================================================================
 
 .PHONY: deploy
-deploy: build docker-build ## デプロイ用ビルドを実行
-	@echo "🚀 デプロイ用ビルドが完了しました"
+deploy: tf-plan tf-apply cb-deploy ## 完全なデプロイを実行
+	@echo "🚀 デプロイが完了しました"
 	@echo ""
 	@echo "次のステップ:"
-	@echo "  1. Cloud Run にデプロイ"
-	@echo "  2. 環境変数を設定"
-	@echo "  3. ドメインを設定"
+	@echo "  1. サービスURLを確認"
+	@echo "  2. ヘルスチェックを実行"
+	@echo "  3. 監視設定を確認"
 
 .PHONY: deploy-staging
 deploy-staging: ## ステージング環境にデプロイ

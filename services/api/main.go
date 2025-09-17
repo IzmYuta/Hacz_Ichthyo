@@ -112,7 +112,7 @@ func main() {
 	r.Post("/v1/submission", handleSubmission)
 	r.Post("/v1/theme/rotate", handleThemeRotate)
 
-	port := getEnv("API_PORT", "8080")
+	port := getEnv("PORT", "8080")
 	log.Printf("Server starting on port %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, r))
 }

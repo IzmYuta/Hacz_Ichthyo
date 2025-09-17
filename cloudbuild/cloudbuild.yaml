@@ -1,0 +1,72 @@
+steps:
+  # Build API image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'infra/docker/api.Dockerfile', '-t', 'gcr.io/$PROJECT_ID/api:$_COMMIT_SHA', '.']
+    id: 'build-api'
+
+  # Build Web image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'infra/docker/web.Dockerfile', '-t', 'gcr.io/$PROJECT_ID/web:$_COMMIT_SHA', '.']
+    id: 'build-web'
+
+  # Build Host image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'infra/docker/host.Dockerfile', '-t', 'gcr.io/$PROJECT_ID/host:$_COMMIT_SHA', '.']
+    id: 'build-host'
+
+  # LiveKit Cloud is used instead of self-hosted LiveKit
+
+  # Push images to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/api:$_COMMIT_SHA']
+    waitFor: ['build-api']
+    id: 'push-api'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/web:$_COMMIT_SHA']
+    waitFor: ['build-web']
+    id: 'push-web'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/host:$_COMMIT_SHA']
+    waitFor: ['build-host']
+    id: 'push-host'
+
+  # LiveKit Cloud push not needed
+
+  # Update Cloud Run services with new images
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Update API service
+        gcloud run services update api --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/api:$_COMMIT_SHA
+        
+        # Update Web service
+        gcloud run services update web --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/web:$_COMMIT_SHA
+        
+        # Update Host service
+        gcloud run services update host --region=asia-northeast1 --image=gcr.io/$PROJECT_ID/host:$_COMMIT_SHA
+        
+        # LiveKit Cloud update not needed
+    waitFor: ['push-api', 'push-web', 'push-host']
+    id: 'update-services'
+
+# Store images in Container Registry
+images:
+  - 'gcr.io/$PROJECT_ID/api:$_COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/web:$_COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/host:$_COMMIT_SHA'
+
+# Build options
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
+
+# Substitution variables
+substitutions:
+  _COMMIT_SHA: 'latest'
+
+# Timeout
+timeout: '1200s'
