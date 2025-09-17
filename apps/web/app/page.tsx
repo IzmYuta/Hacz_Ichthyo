@@ -292,19 +292,6 @@ export default function OnAir() {
               切断
             </Button>
           )}
-          
-          <Button 
-            onMouseDown={startPTT} 
-            onMouseUp={stopPTT} 
-            disabled={!connected}
-            colorScheme={isRecording ? "red" : dialogueActive ? "yellow" : "green"}
-            size="lg"
-            bg={isRecording ? "red.500" : dialogueActive ? "yellow.500" : "green.500"}
-            _hover={{ bg: isRecording ? "red.600" : dialogueActive ? "yellow.600" : "green.600" }}
-            _disabled={{ bg: "gray.500" }}
-          >
-            🎙️ PTT {isRecording ? "(録音中)" : dialogueActive ? "(対話中)" : ""}
-          </Button>
 
           {!dialogueRequested && !dialogueActive ? (
             <Button 
@@ -379,25 +366,69 @@ export default function OnAir() {
         </Box>
 
         {dialogueActive && (
-          <Box 
-            bg="yellow.900" 
-            p={4} 
-            borderRadius="md"
-            border="2px solid"
-            borderColor="yellow.500"
-            animation="pulse 2s infinite"
-          >
-            <Text fontSize="lg" fontWeight="bold" color="yellow.200" mb={2}>
-              🎙️ 対話モード中
-            </Text>
-            <Text fontSize="md" color="yellow.100" mb={2}>
-              AI DJと対話できます。PTTボタンを押して話してください。
-            </Text>
-            <Text fontSize="sm" color="yellow.300">
-              💡 PTTボタンが{isRecording ? "赤色（録音中）" : "黄色（対話中）"}になっています。
-              {isRecording ? "話し終わったらボタンを離してください。" : "押し続けて話しかけてください。"}
-            </Text>
-          </Box>
+          <VStack gap={6} align="stretch">
+            {/* 対話状態の通知 */}
+            <Box 
+              bg="yellow.900" 
+              p={4} 
+              borderRadius="md"
+              border="2px solid"
+              borderColor="yellow.500"
+              animation="pulse 2s infinite"
+            >
+              <Text fontSize="lg" fontWeight="bold" color="yellow.200" mb={2}>
+                🎙️ 対話モード中
+              </Text>
+              <Text fontSize="md" color="yellow.100" mb={2}>
+                AI DJと対話できます。下のボタンを押して話してください。
+              </Text>
+              <Text fontSize="sm" color="yellow.300">
+                💡 ボタンが{isRecording ? "赤色（録音中）" : "黄色（対話中）"}になっています。
+                {isRecording ? "話し終わったらボタンを離してください。" : "押し続けて話しかけてください。"}
+              </Text>
+            </Box>
+
+            {/* PTTボタン - 対話状態の時のみ表示 */}
+            <Box textAlign="center">
+              <Button
+                onMouseDown={startPTT}
+                onMouseUp={stopPTT}
+                onTouchStart={startPTT}
+                onTouchEnd={stopPTT}
+                disabled={!connected}
+                size="xl"
+                height="120px"
+                width="120px"
+                borderRadius="full"
+                fontSize="4xl"
+                fontWeight="bold"
+                colorScheme={isRecording ? "red" : "yellow"}
+                bg={isRecording ? "red.500" : "yellow.500"}
+                _hover={{ 
+                  bg: isRecording ? "red.600" : "yellow.600",
+                  transform: "scale(1.05)"
+                }}
+                _active={{ 
+                  bg: isRecording ? "red.700" : "yellow.700",
+                  transform: "scale(0.95)"
+                }}
+                _disabled={{ bg: "gray.500" }}
+                boxShadow="0 8px 32px rgba(0,0,0,0.3)"
+                transition="all 0.2s ease"
+              >
+                🎙️
+              </Button>
+              <Text fontSize="lg" fontWeight="bold" mt={4} color="yellow.200">
+                {isRecording ? "🎤 録音中 - 話してください" : "🎤 話すボタン"}
+              </Text>
+              <Text fontSize="sm" color="yellow.300" mt={2}>
+                {isRecording 
+                  ? "話し終わったらボタンを離してください" 
+                  : "ボタンを押し続けて話しかけてください"
+                }
+              </Text>
+            </Box>
+          </VStack>
         )}
 
         <audio ref={remoteAudioRef} autoPlay style={{ display: 'none' }} />
