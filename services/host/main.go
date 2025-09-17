@@ -90,12 +90,10 @@ func (w *PCMWriter) WriteB64Delta(b64 string) error {
 			pcm16Data[i/2] = int16(int(frame[i]) | int(frame[i+1])<<8)
 		}
 
-		log.Printf("Writing PCM16 sample %d: %d samples to PCMLocalTrack", framesWritten+1, len(pcm16Data))
 		if err := w.pcmTrack.WriteSample(pcm16Data); err != nil {
 			log.Printf("Failed to write PCM16 sample: %v", err)
 			return err
 		}
-		log.Printf("Successfully wrote PCM16 sample %d", framesWritten+1)
 		framesWritten++
 	}
 	log.Printf("WriteB64Delta completed: wrote %d frames, %d bytes remaining in buffer", framesWritten, len(w.buf))
