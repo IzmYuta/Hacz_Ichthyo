@@ -10,7 +10,6 @@
 graph TB
     subgraph "Client Layer"
         WEB["Next.js Web App<br/>Subscribe Only"]
-        MOBILE["Mobile App<br/>PWA Subscribe Only"]
     end
     
     subgraph "GCP Cloud Run Services"
@@ -32,9 +31,7 @@ graph TB
     
     %% Client connections (Subscribe Only)
     WEB --> LIVEKIT
-    MOBILE --> LIVEKIT
     WEB --> API
-    MOBILE --> API
     
     %% Service connections
     API --> DB
