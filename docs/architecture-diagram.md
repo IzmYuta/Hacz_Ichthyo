@@ -20,7 +20,7 @@ graph TB
     end
     
     subgraph "External Services"
-        OPENAI["OpenAI API<br/>GPT-4o-mini (Script)<br/>TTS-1 (Speech)<br/>Chat Completions"]
+        OPENAI["OpenAI API<br/>GPT-4o-mini (Script)<br/>TTS-1 (Speech)<br/>Realtime API (Dialogue)"]
         STORAGE["Cloud Storage<br/>Backups & Media<br/>Recordings & Clips"]
     end
     
@@ -42,10 +42,14 @@ graph TB
     HOST --> OPENAI
     LIVEKIT --> REDIS
     
-    %% PTT Flow
-    WEB -.->|PTT Audio/Text| API
+    %% PTT Flow (Dialogue Mode)
+    WEB -.->|PTT Audio| API
     API -.->|Queue Management| REDIS
-    API -.->|PTT Injection| HOST
+    API -.->|Dialogue Request| HOST
+    WEB -.->|Audio Data (Base64)| API
+    API -.->|Audio Forward| HOST
+    HOST -.->|Realtime Audio| OPENAI
+    OPENAI -.->|AI Response Audio| HOST
     
     %% Script Generation Flow
     HOST -.->|Script Generation| OPENAI
@@ -94,15 +98,17 @@ sequenceDiagram
     L->>W: 音声ストリーム配信
     W->>U: 音声再生
     
-    %% PTT投稿処理
-    U->>W: PTT音声/テキスト投稿
+    %% PTT投稿処理（対話モード）
+    U->>W: PTT音声投稿
     W->>A: WebSocket送信（/ws/ptt）
     A->>R: キューに追加（優先度付き）
-    A->>H: 投稿注入（HTTP API）
-    H->>O: 投稿内容送信（Chat Completions）
-    O->>H: AI応答テキスト
-    H->>O: TTS音声生成要求
-    O->>H: 応答音声データ
+    A->>H: 対話リクエスト通知
+    H->>H: 対話モード開始
+    H->>O: OpenAI Realtime接続
+    W->>A: 音声データ送信（Base64）
+    A->>H: 音声データ転送
+    H->>O: 音声データ送信（Realtime API）
+    O->>H: AI応答音声（リアルタイム）
     H->>L: 応答音声配信
     L->>W: 応答音声配信
     W->>U: 応答音声再生

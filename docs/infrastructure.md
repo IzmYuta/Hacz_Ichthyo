@@ -24,7 +24,7 @@ graph TB
     end
     
     subgraph "External Services"
-        OPENAI["OpenAI Realtime API<br/>Single Session"]
+        OPENAI["OpenAI API<br/>GPT-4o-mini (Script)<br/>TTS-1 (Speech)<br/>Realtime API (Dialogue)"]
         STORAGE["Cloud Storage<br/>Backups & Media<br/>Recordings & Clips"]
     end
     
@@ -41,9 +41,14 @@ graph TB
     HOST --> OPENAI
     LIVEKIT --> REDIS
     
-    %% PTT Flow
-    WEB -.->|PTT Audio/Text| API
+    %% PTT Flow (Dialogue Mode)
+    WEB -.->|PTT Audio| API
     API -.->|Queue Management| REDIS
+    API -.->|Dialogue Request| HOST
+    WEB -.->|Audio Data (Base64)| API
+    API -.->|Audio Forward| HOST
+    HOST -.->|Realtime Audio| OPENAI
+    OPENAI -.->|AI Response Audio| HOST
     
     %% Data connections
     API --> STORAGE
