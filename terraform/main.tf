@@ -206,6 +206,10 @@ resource "google_cloud_run_v2_service" "api" {
           }
         }
       }
+      env {
+        name  = "ALLOWED_ORIGIN"
+        value = google_cloud_run_v2_service.web.uri
+      }
     }
 
     scaling {
