@@ -119,8 +119,7 @@ jobs:
       - name: Run Cloud Build test
         run: |
           gcloud builds submit \
-            --config cloudbuild/cloudbuild-test.yaml \
-            --substitutions _COMMIT_SHA=${{ github.sha }}
+            --config cloudbuild/cloudbuild-test.yaml
 
   cloud-build-deploy:
     needs: cloud-build-test
