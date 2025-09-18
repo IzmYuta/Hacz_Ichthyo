@@ -21,7 +21,6 @@ graph TB
     subgraph "External Services"
         LIVEKIT["LiveKit Cloud<br/>WebRTC SFU<br/>Audio Distribution<br/>Auto Scaling"]
         OPENAI["OpenAI API<br/>GPT-4o-mini (Script)<br/>TTS-1 (Speech)<br/>Realtime API (Dialogue)"]
-        STORAGE["Cloud Storage<br/>Backups & Media<br/>Recordings & Clips"]
     end
     
     
@@ -31,7 +30,6 @@ graph TB
     
     %% Service connections
     API --> DB
-    API --> REDIS
     API --> LIVEKIT
     HOST --> LIVEKIT
     HOST --> OPENAI
@@ -41,7 +39,6 @@ graph TB
     WEB -.->|PTT Audio| API
     API -.->|Queue Management| REDIS
     API -.->|Dialogue Request| HOST
-    WEB -.->|Audio Data Base64| API
     API -.->|Audio Forward| HOST
     HOST -.->|Realtime Audio| OPENAI
     OPENAI -.->|AI Response Audio| HOST
@@ -50,9 +47,7 @@ graph TB
     HOST -.->|Script Generation| OPENAI
     HOST -.->|TTS Generation| OPENAI
     
-    %% Data connections
-    API --> STORAGE
-    HOST --> STORAGE
+
     
 ```
 
@@ -194,11 +189,9 @@ graph LR
     W7 --> A2
     W7 --> A3
     W2 --> L1
-    W4 --> W2
     
     %% Inter-service connections
     H3 --> L1
-    W2 --> L1
     A7 --> H9
     A8 --> H10
 ```
