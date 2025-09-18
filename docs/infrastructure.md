@@ -15,7 +15,6 @@ graph TB
     subgraph "GCP Cloud Run Services"
         API["API Service<br/>Go<br/>PTT Queue Management"]
         HOST["Host Service<br/>Go<br/>24h Continuous Broadcast"]
-        LIVEKIT["LiveKit Service<br/>WebRTC SFU<br/>Audio Distribution"]
     end
     
     subgraph "Data Layer"
@@ -24,6 +23,7 @@ graph TB
     end
     
     subgraph "External Services"
+        LIVEKIT["LiveKit Cloud<br/>WebRTC SFU<br/>Audio Distribution"]
         OPENAI["OpenAI API<br/>GPT-4o-mini (Script)<br/>TTS-1 (Speech)<br/>Realtime API (Dialogue)"]
         STORAGE["Cloud Storage<br/>Backups & Media<br/>Recordings & Clips"]
     end
@@ -90,19 +90,7 @@ graph TB
   - テストモード対応（OpenAI接続失敗時）
   - 自動再接続機能
 
-### 3. LiveKit Service (WebRTC SFU)
-
-- **役割**: リアルタイム音声配信の中継
-- **ポート**: 7880 (HTTP), 7881 (UDP)
-- **リソース**: 2Gi RAM, 2 CPU
-- **最大インスタンス**: 3
-- **機能**:
-  - WebRTC音声ストリーミング
-  - 複数ユーザーの同時接続
-  - 音声ミキシング・ダッキング
-  - 録音・クリップ生成
-
-### 4. Web Service (Next.js)
+### 3. Web Service (Next.js)
 
 - **役割**: フロントエンドアプリケーション（放送型対応）
 - **ポート**: 3000
@@ -110,7 +98,7 @@ graph TB
 - **最大インスタンス**: 5
 - **機能**:
   - ユーザーインターフェース
-  - LiveKit接続（Subscribe Only）
+  - LiveKit Cloud接続（Subscribe Only）
   - PTT (Push-to-Talk) 機能
   - 対話モード（AI DJとのリアルタイム対話）
   - 音声録音・送信（WebM→PCM16変換）
@@ -118,6 +106,19 @@ graph TB
   - 番組進行情報表示
   - テーマ切替UI
   - リアルタイム音声処理
+
+## 外部サービス構成
+
+### LiveKit Cloud
+
+- **サービス**: LiveKit Cloud (SaaS)
+- **役割**: リアルタイム音声配信の中継
+- **機能**:
+  - WebRTC音声ストリーミング
+  - 複数ユーザーの同時接続
+  - 音声ミキシング・ダッキング
+  - 録音・クリップ生成
+  - スケーラブルな音声配信
 
 ## データベース構成
 
@@ -235,7 +236,7 @@ LIVEKIT_API_SECRET=***
 LIVEKIT_API_KEY=***
 LIVEKIT_API_SECRET=***
 OPENAI_API_KEY=***
-LIVEKIT_WS_URL=wss://livekit-***.run.app
+LIVEKIT_WS_URL=wss://your-project.livekit.cloud
 
 # Web Service
 NEXT_PUBLIC_API_BASE=https://api-***.run.app
@@ -262,7 +263,7 @@ NEXT_PUBLIC_OPENAI_REALTIME_MODEL=gpt-realtime
 
 - **API Service**: 負荷に応じて0-10インスタンス
 - **Web Service**: 負荷に応じて0-5インスタンス
-- **LiveKit Service**: 負荷に応じて0-3インスタンス
+- **LiveKit Cloud**: 自動スケーリング（SaaS）
 
 ### 垂直スケーリング
 

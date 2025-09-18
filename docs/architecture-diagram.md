@@ -11,7 +11,6 @@ graph TB
     subgraph "GCP Cloud Run Services"
         API["API Service<br/>Go<br/>Port: 8080<br/>1Gi RAM, 1 CPU<br/>Max: 10 instances<br/>PTT Queue Management"]
         HOST["Host Service<br/>Go<br/>Port: 8080<br/>1Gi RAM, 1 CPU<br/>Fixed: 1 instance<br/>Script Generation & TTS<br/>24h Continuous Broadcast"]
-        LIVEKIT["LiveKit Service<br/>WebRTC SFU<br/>Port: 7880/7881<br/>2Gi RAM, 2 CPU<br/>Max: 3 instances<br/>Audio Distribution"]
     end
     
     subgraph "Data Layer"
@@ -20,6 +19,7 @@ graph TB
     end
     
     subgraph "External Services"
+        LIVEKIT["LiveKit Cloud<br/>WebRTC SFU<br/>Audio Distribution<br/>Auto Scaling"]
         OPENAI["OpenAI API<br/>GPT-4o-mini (Script)<br/>TTS-1 (Speech)<br/>Realtime API (Dialogue)"]
         STORAGE["Cloud Storage<br/>Backups & Media<br/>Recordings & Clips"]
     end
@@ -148,11 +148,11 @@ graph LR
         H11[Audio Mixer]
     end
     
-    subgraph "LiveKit Service"
+    subgraph "LiveKit Cloud (SaaS)"
         L1[WebRTC SFU]
         L2[Audio Mixer]
         L3[Recording]
-        L4[Redis Client]
+        L4[Auto Scaling]
     end
     
     subgraph "Web Service"
@@ -188,7 +188,7 @@ graph LR
     H10 --> H11
     H11 --> H3
     
-    %% LiveKit Service connections
+    %% LiveKit Cloud connections
     L1 --> L2
     L1 --> L3
     L2 --> L4
