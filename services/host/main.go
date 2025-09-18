@@ -384,6 +384,14 @@ func (h *HostAgent) waitForInitialResponse() error {
 						log.Printf("Received initial audio response, length: %d", len(audioData))
 						h.publishAudioToLiveKit(audioData)
 					}
+				case "response.content_part.done":
+					// 初回応答のテキスト内容を字幕として送信
+					if contentData, ok := msg["content_part"].(map[string]interface{}); ok {
+						if content, ok := contentData["text"].(string); ok && content != "" {
+							log.Printf("Received initial text content: %s", content)
+							h.sendSubtitle(content)
+						}
+					}
 				case "response.done":
 					// 初回応答完了
 					log.Println("Initial response completed")
@@ -394,7 +402,7 @@ func (h *HostAgent) waitForInitialResponse() error {
 				case "session.updated":
 					log.Println("Session updated, continuing to wait for response...")
 					continue
-				case "conversation.item.added", "conversation.item.done", "response.output_audio.done", "response.output_audio_transcript.done", "response.content_part.done", "response.output_item.done", "rate_limits.updated":
+				case "conversation.item.added", "conversation.item.done", "response.output_audio.done", "response.output_audio_transcript.done", "response.output_item.done", "rate_limits.updated":
 					// これらのメッセージは無視して続行
 					continue
 				case "error":
@@ -452,13 +460,21 @@ func (h *HostAgent) handleDialogueMessages() {
 						}
 						h.dialogueStateMutex.Unlock()
 					}
+				case "response.content_part.done":
+					// 対話中のテキスト応答が完了した時に字幕として送信
+					if contentData, ok := msg["content_part"].(map[string]interface{}); ok {
+						if content, ok := contentData["text"].(string); ok && content != "" {
+							log.Printf("Received dialogue text content: %s", content)
+							h.sendSubtitle(content)
+						}
+					}
 				case "response.done":
 					log.Println("Dialogue response completed")
 				case "session.created":
 					log.Println("Dialogue session created")
 				case "session.updated":
 					log.Println("Dialogue session updated")
-				case "conversation.item.added", "conversation.item.done", "response.output_audio.done", "response.output_audio_transcript.done", "response.content_part.done", "response.output_item.done", "rate_limits.updated":
+				case "conversation.item.added", "conversation.item.done", "response.output_audio.done", "response.output_audio_transcript.done", "response.output_item.done", "rate_limits.updated":
 					// これらのメッセージは無視
 				case "error":
 					if errorData, ok := msg["error"].(map[string]interface{}); ok {
@@ -514,10 +530,15 @@ func (h *HostAgent) sendMessage(content string) {
 	apiKey := getEnv("OPENAI_API_KEY", "")
 	if apiKey == "" || apiKey == "your-openai-api-key" || apiKey == "test-mode" {
 		log.Printf("Test mode: Message would be sent: %s", content)
+		// テストモードでも字幕は送信
+		h.sendSubtitle(content)
 		return
 	}
 
 	log.Printf("Sending message to OpenAI TTS: %s", content)
+
+	// 字幕を先に送信
+	h.sendSubtitle(content)
 
 	// OpenAI TTS APIを使用して音声を生成
 	audioData, err := h.generateTTS(content, apiKey)
@@ -604,6 +625,41 @@ func (h *HostAgent) publishAudioToLiveKit(audioData string) {
 	default:
 		log.Println("Timer reset channel full, skipping signal")
 	}
+}
+
+// sendSubtitle 字幕データをAPIサーバーに送信
+func (h *HostAgent) sendSubtitle(text string) {
+	apiBase := getEnv("API_BASE", "http://api:8080")
+
+	payload := map[string]interface{}{
+		"text": text,
+		"type": "host_speech",
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Failed to marshal subtitle data: %v", err)
+		return
+	}
+
+	// HTTPクライアントにタイムアウトを設定
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Post(apiBase+"/v1/subtitle", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Failed to send subtitle: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Subtitle API returned status: %d", resp.StatusCode)
+		return
+	}
+
+	log.Printf("Subtitle sent successfully: %s", text)
 }
 
 // publishUserAudioToLiveKit ユーザー音声をLiveKitに送信

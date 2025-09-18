@@ -17,6 +17,7 @@ export default function OnAir() {
   const audioChunksRef = useRef<Blob[]>([]);
   const roomRef = useRef<Room | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
+  const subtitleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8080';
 
@@ -81,6 +82,19 @@ export default function OnAir() {
         console.log('Dialogue ended');
         setDialogueActive(false);
         setDialogueRequested(false);
+      } else if (data.type === 'subtitle') {
+        console.log('Subtitle received:', data.text);
+        setSubtitles(data.text);
+        
+        // 既存のタイムアウトをクリア
+        if (subtitleTimeoutRef.current) {
+          clearTimeout(subtitleTimeoutRef.current);
+        }
+        
+        // 10秒後に字幕をクリア
+        subtitleTimeoutRef.current = setTimeout(() => {
+          setSubtitles('');
+        }, 10000);
       }
     };
     
@@ -100,6 +114,10 @@ export default function OnAir() {
     return () => {
       websocket.close();
       broadcastWebsocket.close();
+      // タイムアウトをクリア
+      if (subtitleTimeoutRef.current) {
+        clearTimeout(subtitleTimeoutRef.current);
+      }
     };
   }, [API_BASE]);
 
@@ -328,18 +346,26 @@ export default function OnAir() {
         </HStack>
 
         <Box 
-          bg="blackAlpha.500" 
+          bg="blackAlpha.600" 
           p={6} 
           borderRadius="md"
           minH="200px"
+          border="1px solid"
+          borderColor="whiteAlpha.200"
         >
-          <Text fontSize="lg" fontWeight="bold" mb={4}>
-            字幕:
+          <Text fontSize="lg" fontWeight="bold" mb={4} color="blue.200">
+            📺 字幕:
           </Text>
           <Text 
             whiteSpace="pre-wrap" 
-            fontSize="md"
-            lineHeight="1.6"
+            fontSize="lg"
+            lineHeight="1.8"
+            color={subtitles ? "white" : "gray.400"}
+            fontFamily="mono"
+            p={subtitles ? 4 : 0}
+            bg={subtitles ? "whiteAlpha.100" : "transparent"}
+            borderRadius={subtitles ? "md" : "none"}
+            transition="all 0.3s ease"
           >
             {subtitles || '字幕がここに表示されます...'}
           </Text>
