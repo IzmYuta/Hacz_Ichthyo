@@ -45,6 +45,8 @@ type HostAgent struct {
 	dialogueStateMutex sync.RWMutex
 	dialogueStartedAt  time.Time
 	lastActivity       time.Time
+	// 対話モードタイムアウト用
+	dialogueTimeoutChan chan struct{}
 }
 
 type PCMWriter struct {
@@ -162,9 +164,10 @@ func main() {
 			"テクノロジーの話題",
 			"エンターテイメント",
 		},
-		currentTopic:   0,
-		dialogueMode:   false,
-		timerResetChan: make(chan struct{}, 10), // バッファを追加して複数の信号を処理可能にする
+		currentTopic:        0,
+		dialogueMode:        false,
+		timerResetChan:      make(chan struct{}, 10), // バッファを追加して複数の信号を処理可能にする
+		dialogueTimeoutChan: make(chan struct{}, 1),  // 対話モードタイムアウト用
 	}
 
 	// HTTPサーバーを起動（Cloud Run用）
@@ -444,6 +447,8 @@ func (h *HostAgent) handleDialogueMessages() {
 						h.dialogueStateMutex.Lock()
 						if h.dialogueMode {
 							h.lastActivity = time.Now()
+							// タイムアウトタイマーをリセット
+							h.resetDialogueTimeout()
 						}
 						h.dialogueStateMutex.Unlock()
 					}
@@ -829,6 +834,8 @@ func (h *HostAgent) startHTTPServer() {
 		h.dialogueStateMutex.Lock()
 		if h.dialogueMode {
 			h.lastActivity = time.Now()
+			// タイムアウトタイマーをリセット
+			h.resetDialogueTimeout()
 		}
 		h.dialogueStateMutex.Unlock()
 
@@ -1046,6 +1053,9 @@ func (h *HostAgent) startDialogueMode(requestID string) {
 	h.dialogueStartedAt = time.Now()
 	h.lastActivity = time.Now()
 
+	// 3分のタイムアウトタイマーを開始
+	go h.startDialogueTimeout()
+
 	// 現在のTTSを停止（必要に応じて）
 	log.Println("Stopping current TTS for dialogue mode")
 	h.stopCurrentAudio()
@@ -1093,6 +1103,16 @@ func (h *HostAgent) endDialogueMode() {
 
 	log.Println("Ending dialogue mode")
 	h.dialogueMode = false
+
+	// タイムアウトチャンネルをクリア
+	select {
+	case <-h.dialogueTimeoutChan:
+		// チャンネルが既に空の場合は何もしない
+	default:
+		// チャンネルに何かある場合はクリア
+	}
+	// 新しい空のチャンネルを作成
+	h.dialogueTimeoutChan = make(chan struct{}, 1)
 
 	// OpenAI Realtime接続を切断
 	if h.dialogueConn != nil {
@@ -1274,6 +1294,66 @@ func (h *HostAgent) createUserAudioTrack() error {
 
 	log.Println("User audio track created and published successfully")
 	return nil
+}
+
+// startDialogueTimeout 対話モードの3分タイムアウト処理
+func (h *HostAgent) startDialogueTimeout() {
+	log.Println("Starting dialogue timeout timer (3 minutes)")
+
+	// 3分後にタイムアウトチャンネルに信号を送信
+	time.AfterFunc(3*time.Minute, func() {
+		select {
+		case h.dialogueTimeoutChan <- struct{}{}:
+			log.Println("Dialogue timeout signal sent")
+		default:
+			// チャンネルが満杯の場合は何もしない（既にタイムアウト処理が実行中）
+		}
+	})
+
+	// タイムアウト信号を待機
+	select {
+	case <-h.dialogueTimeoutChan:
+		// タイムアウトが発生した場合
+		h.dialogueStateMutex.Lock()
+		if h.dialogueMode {
+			log.Println("Dialogue mode timeout (3 minutes) - ending dialogue")
+			h.dialogueMode = false
+			h.dialogueStateMutex.Unlock()
+
+			// 対話モードを終了
+			h.endDialogueMode()
+
+			// タイムアウト通知を送信
+			h.sendDialogueNotification("dialogue_timeout", "timeout")
+		} else {
+			h.dialogueStateMutex.Unlock()
+		}
+	case <-h.ctx.Done():
+		// コンテキストがキャンセルされた場合
+		log.Println("Dialogue timeout cancelled due to context cancellation")
+	}
+}
+
+// resetDialogueTimeout 対話モードのタイムアウトタイマーをリセット
+func (h *HostAgent) resetDialogueTimeout() {
+	// タイムアウトチャンネルをクリアして新しいタイマーを開始
+	select {
+	case <-h.dialogueTimeoutChan:
+		// 既存のタイムアウト信号をクリア
+	default:
+		// チャンネルが空の場合は何もしない
+	}
+
+	// 新しい3分タイマーを開始
+	go func() {
+		time.Sleep(3 * time.Minute)
+		select {
+		case h.dialogueTimeoutChan <- struct{}{}:
+			log.Println("Dialogue timeout signal sent (after reset)")
+		default:
+			// チャンネルが満杯の場合は何もしない
+		}
+	}()
 }
 
 func getEnv(key, defaultValue string) string {
