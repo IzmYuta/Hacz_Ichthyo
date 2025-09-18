@@ -85,12 +85,11 @@ func (h *Hub) Broadcast(messageType string, data interface{}) {
 		Timestamp: time.Now(),
 	}
 
-	// デバッグログはコメントアウト（必要時のみ有効化）
-	// log.Printf("Broadcasting message type: %s to %d clients", messageType, len(h.clients))
+	log.Printf("Broadcasting message type: %s to %d clients", messageType, len(h.clients))
 
 	select {
 	case h.broadcast <- message:
-		// log.Printf("Message queued for broadcast: %s", messageType)
+		log.Printf("Message queued for broadcast: %s", messageType)
 	default:
 		log.Println("Broadcast channel full, dropping message")
 	}
