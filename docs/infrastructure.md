@@ -193,17 +193,7 @@ CREATE INDEX idx_queue_meta_priority ON queue USING GIN (meta);
   - キュー管理
   - リアルタイムデータ
 
-## ネットワーク構成
-
-### VPC Connector
-
-- **名前**: radio24-connector
-- **リージョン**: asia-northeast1
-- **最小インスタンス**: 2
-- **最大インスタンス**: 3
-- **用途**: Cloud RunとVPC内リソースの接続
-
-### セキュリティ
+## セキュリティ
 
 - **認証**: Cloud Run IAM
 - **HTTPS**: 全サービスでHTTPS強制

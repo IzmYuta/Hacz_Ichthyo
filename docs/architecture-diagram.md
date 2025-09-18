@@ -24,15 +24,10 @@ graph TB
         STORAGE["Cloud Storage<br/>Backups & Media<br/>Recordings & Clips"]
     end
     
-    subgraph "Network"
-        VPC["VPC Connector<br/>radio24-connector<br/>Min: 2, Max: 3"]
-        LB["Cloud Load Balancer<br/>HTTPS Termination"]
-    end
     
     %% Client connections (Subscribe Only)
-    WEB --> LB
-    LB --> LIVEKIT
-    LB --> API
+    WEB --> LIVEKIT
+    WEB --> API
     
     %% Service connections
     API --> DB
@@ -59,12 +54,6 @@ graph TB
     API --> STORAGE
     HOST --> STORAGE
     
-    %% Network connections
-    API --> VPC
-    HOST --> VPC
-    LIVEKIT --> VPC
-    VPC --> DB
-    VPC --> REDIS
 ```
 
 ## データフロー図（放送型）
