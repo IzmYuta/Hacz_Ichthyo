@@ -133,6 +133,7 @@ func main() {
 	r.Post("/v1/queue/dequeue", handleQueueDequeue)
 	r.Post("/v1/broadcast", handleBroadcastMessage)
 	r.Get("/v1/dialogue/status", handleDialogueStatus)
+	r.Post("/v1/subtitle", handleSubtitle)
 
 	port := getEnv("PORT", "8080")
 	log.Printf("Server starting on port %s", port)
@@ -846,4 +847,36 @@ func startDialogueMode(clientID string) {
 		LastActivity: time.Now(),
 	}
 	log.Printf("Dialogue mode started for client: %s", clientID)
+}
+
+// handleSubtitle 字幕データを配信
+func handleSubtitle(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text string `json:"text"`
+		Type string `json:"type,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.Text == "" {
+		http.Error(w, "Text is required", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Received subtitle: %s", req.Text)
+
+	// Broadcast Hubに字幕を配信
+	broadcastHub.Broadcast("subtitle", map[string]interface{}{
+		"text":      req.Text,
+		"type":      req.Type,
+		"timestamp": time.Now().Format(time.RFC3339),
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "subtitle_broadcasted",
+	})
 }
