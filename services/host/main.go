@@ -63,7 +63,8 @@ func (w *PCMWriter) WriteB64Delta(b64 string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	log.Printf("WriteB64Delta called with base64 length: %d", len(b64))
+	// デバッグログはコメントアウト（必要時のみ有効化）
+	// log.Printf("WriteB64Delta called with base64 length: %d", len(b64))
 
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
@@ -71,9 +72,10 @@ func (w *PCMWriter) WriteB64Delta(b64 string) error {
 		return err
 	}
 
-	log.Printf("Decoded audio data: %d bytes", len(raw))
+	// デバッグログはコメントアウト（必要時のみ有効化）
+	// log.Printf("Decoded audio data: %d bytes", len(raw))
 	w.buf = append(w.buf, raw...)
-	log.Printf("Buffer now contains: %d bytes", len(w.buf))
+	// log.Printf("Buffer now contains: %d bytes", len(w.buf))
 
 	framesWritten := 0
 	for len(w.buf) >= frameBytes {
@@ -96,7 +98,8 @@ func (w *PCMWriter) WriteB64Delta(b64 string) error {
 		}
 		framesWritten++
 	}
-	log.Printf("WriteB64Delta completed: wrote %d frames, %d bytes remaining in buffer", framesWritten, len(w.buf))
+	// デバッグログはコメントアウト（必要時のみ有効化）
+	// log.Printf("WriteB64Delta completed: wrote %d frames, %d bytes remaining in buffer", framesWritten, len(w.buf))
 	return nil
 }
 
@@ -105,7 +108,8 @@ func (w *PCMWriter) ClearBuffer() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	log.Printf("Clearing audio buffer (%d bytes)", len(w.buf))
+	// デバッグログはコメントアウト（必要時のみ有効化）
+	// log.Printf("Clearing audio buffer (%d bytes)", len(w.buf))
 	w.buf = w.buf[:0]
 }
 
@@ -164,7 +168,7 @@ func main() {
 		},
 		currentTopic:   0,
 		dialogueMode:   false,
-		timerResetChan: make(chan struct{}, 10), // バッファを追加して複数の信号を処理可能にする
+		timerResetChan: make(chan struct{}, 1), // バッファサイズを1に制限して重複を防ぐ
 	}
 
 	// HTTPサーバーを起動（Cloud Run用）
@@ -370,7 +374,8 @@ func (h *HostAgent) waitForInitialResponse() error {
 				return err
 			}
 
-			log.Printf("Received initial message: %+v", msg)
+			// デバッグログはコメントアウト（必要時のみ有効化）
+			// log.Printf("Received initial message: %+v", msg)
 
 			// メッセージタイプを確認
 			if msgType, ok := msg["type"].(string); ok {
@@ -378,7 +383,8 @@ func (h *HostAgent) waitForInitialResponse() error {
 				case "response.output_audio.delta":
 					// 初回応答音声を受信
 					if audioData, ok := msg["delta"].(string); ok {
-						log.Printf("Received initial audio response, length: %d", len(audioData))
+						// デバッグログはコメントアウト（必要時のみ有効化）
+						// log.Printf("Received initial audio response, length: %d", len(audioData))
 						h.publishAudioToLiveKit(audioData)
 					}
 				case "response.done":
@@ -430,14 +436,16 @@ func (h *HostAgent) handleDialogueMessages() {
 				return
 			}
 
-			log.Printf("Received dialogue message: %+v", msg)
+			// デバッグログはコメントアウト（必要時のみ有効化）
+			// log.Printf("Received dialogue message: %+v", msg)
 
 			// 音声出力をLiveKitにPublish
 			if msgType, ok := msg["type"].(string); ok {
 				switch msgType {
 				case "response.output_audio.delta":
 					if audioData, ok := msg["delta"].(string); ok {
-						log.Printf("Received dialogue audio delta, length: %d", len(audioData))
+						// デバッグログはコメントアウト（必要時のみ有効化）
+						// log.Printf("Received dialogue audio delta, length: %d", len(audioData))
 						h.publishAudioToLiveKit(audioData)
 
 						// 音声出力時もアクティビティを更新
@@ -448,11 +456,12 @@ func (h *HostAgent) handleDialogueMessages() {
 						h.dialogueStateMutex.Unlock()
 					}
 				case "response.done":
-					log.Println("Dialogue response completed")
+					// デバッグログはコメントアウト（必要時のみ有効化）
+					// log.Println("Dialogue response completed")
 				case "session.created":
-					log.Println("Dialogue session created")
+					// log.Println("Dialogue session created")
 				case "session.updated":
-					log.Println("Dialogue session updated")
+					// log.Println("Dialogue session updated")
 				case "conversation.item.added", "conversation.item.done", "response.output_audio.done", "response.output_audio_transcript.done", "response.content_part.done", "response.output_item.done", "rate_limits.updated":
 					// これらのメッセージは無視
 				case "error":
@@ -461,7 +470,8 @@ func (h *HostAgent) handleDialogueMessages() {
 						if code, ok := errorData["code"].(string); ok {
 							switch code {
 							case "input_audio_buffer_commit_empty":
-								log.Println("Audio buffer is empty - this may be due to audio format issues")
+								// 一般的なエラーなので詳細ログを削減
+								// log.Println("Audio buffer is empty - this may be due to audio format issues")
 							case "invalid_value":
 								log.Println("Invalid audio data format - check PCM16 encoding")
 							default:
@@ -470,7 +480,8 @@ func (h *HostAgent) handleDialogueMessages() {
 						}
 					}
 				default:
-					log.Printf("Unhandled dialogue message type: %s", msgType)
+					// デバッグログはコメントアウト（必要時のみ有効化）
+					// log.Printf("Unhandled dialogue message type: %s", msgType)
 				}
 			}
 		}
@@ -501,6 +512,17 @@ func (h *HostAgent) run() {
 			log.Println("Resetting timer due to LiveKit upload completion")
 			ticker.Stop()
 			ticker = time.NewTicker(30 * time.Second)
+
+			// チャンネルに残っている他のリセット信号をクリア
+			for {
+				select {
+				case <-h.timerResetChan:
+					log.Println("Cleared additional timer reset signal")
+				default:
+					goto timerResetComplete
+				}
+			}
+		timerResetComplete:
 		}
 	}
 }
@@ -524,6 +546,9 @@ func (h *HostAgent) sendMessage(content string) {
 	// 生成された音声をLiveKitに送信
 	h.publishAudioToLiveKit(audioData)
 	log.Printf("TTS audio generated and published successfully")
+
+	// 音声生成完了後にタイマーリセット信号を送信（1回のみ）
+	h.sendTimerResetSignal()
 }
 
 // generateTTS OpenAI TTS APIを使用してテキストを音声に変換
@@ -570,7 +595,8 @@ func (h *HostAgent) generateTTS(text, apiKey string) (string, error) {
 
 	// PCMデータをBase64エンコード
 	audioBase64 := base64.StdEncoding.EncodeToString(audioBytes)
-	log.Printf("Generated TTS audio: %d bytes, base64 length: %d", len(audioBytes), len(audioBase64))
+	// デバッグログはコメントアウト（必要時のみ有効化）
+	// log.Printf("Generated TTS audio: %d bytes, base64 length: %d", len(audioBytes), len(audioBase64))
 
 	return audioBase64, nil
 }
@@ -581,23 +607,47 @@ func (h *HostAgent) publishAudioToLiveKit(audioData string) {
 		return
 	}
 
-	log.Printf("publishAudioToLiveKit called with data length: %d", len(audioData))
+	// デバッグログはコメントアウト（必要時のみ有効化）
+	// log.Printf("publishAudioToLiveKit called with data length: %d", len(audioData))
 
 	// PCMWriterを使用してBase64デルタデータを処理
-	log.Printf("Processing real audio data via PCMWriter, calling WriteB64Delta...")
+	// log.Printf("Processing real audio data via PCMWriter, calling WriteB64Delta...")
 	if err := h.pcmWriter.WriteB64Delta(audioData); err != nil {
 		log.Printf("Failed to write audio delta: %v", err)
 		return
 	}
 
-	log.Printf("Audio data published via PCMWriter successfully")
+	// デバッグログはコメントアウト（必要時のみ有効化）
+	// log.Printf("Audio data published via PCMWriter successfully")
+}
 
-	// LiveKitアップロード完了を通知（タイマーリセット用）
+// sendTimerResetSignal タイマーリセット信号を送信（重複を防ぐ）
+func (h *HostAgent) sendTimerResetSignal() {
+	// 非ブロッキングで送信し、チャンネルが満杯の場合は既存の信号をクリアしてから送信
 	select {
 	case h.timerResetChan <- struct{}{}:
 		log.Println("Timer reset signal sent - next script will be generated 30s after this upload")
 	default:
-		log.Println("Timer reset channel full, skipping signal")
+		// チャンネルが満杯の場合、既存の信号をクリアしてから送信
+		log.Println("Timer reset channel full, clearing existing signals and sending new one")
+		// 既存の信号をクリア
+		for {
+			select {
+			case <-h.timerResetChan:
+				// 既存の信号を削除
+			default:
+				// チャンネルが空になったら新しい信号を送信
+				select {
+				case h.timerResetChan <- struct{}{}:
+					log.Println("Timer reset signal sent after clearing channel")
+					return
+				default:
+					// まだ満杯の場合は少し待ってから再試行
+					time.Sleep(10 * time.Millisecond)
+					continue
+				}
+			}
+		}
 	}
 }
 
@@ -608,16 +658,18 @@ func (h *HostAgent) publishUserAudioToLiveKit(audioData string) {
 		return
 	}
 
-	log.Printf("publishUserAudioToLiveKit called with data length: %d", len(audioData))
+	// デバッグログはコメントアウト（必要時のみ有効化）
+	// log.Printf("publishUserAudioToLiveKit called with data length: %d", len(audioData))
 
 	// ユーザー音声用PCMWriterを使用してBase64デルタデータを処理
-	log.Printf("Processing user audio data via PCMWriter, calling WriteB64Delta...")
+	// log.Printf("Processing user audio data via PCMWriter, calling WriteB64Delta...")
 	if err := h.userPcmWriter.WriteB64Delta(audioData); err != nil {
 		log.Printf("Failed to write user audio delta: %v", err)
 		return
 	}
 
-	log.Printf("User audio data published via PCMWriter successfully")
+	// デバッグログはコメントアウト（必要時のみ有効化）
+	// log.Printf("User audio data published via PCMWriter successfully")
 }
 
 // generateScript OpenAI APIを使用して台本を生成
