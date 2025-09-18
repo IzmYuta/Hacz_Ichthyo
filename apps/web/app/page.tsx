@@ -15,6 +15,8 @@ export default function OnAir() {
   const [dialogueRequested, setDialogueRequested] = useState(false);
   const [dialogueActive, setDialogueActive] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [myClientId, setMyClientId] = useState<string>('');
+  const [dialogueRequester, setDialogueRequester] = useState<string>('');
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const roomRef = useRef<Room | null>(null);
@@ -43,6 +45,10 @@ export default function OnAir() {
       } else if (data.type === 'dialogue_queued') {
         console.log('Dialogue queued:', data.id);
         setDialogueRequested(true);
+        // クライアントIDを保存
+        if (data.client_id) {
+          setMyClientId(data.client_id);
+        }
       } else if (data.type === 'dialogue_end_ack') {
         console.log('Dialogue end acknowledged');
         setDialogueActive(false);
@@ -51,6 +57,7 @@ export default function OnAir() {
         console.log('Dialogue ended by server');
         setDialogueActive(false);
         setDialogueRequested(false);
+        setDialogueRequester('');
       }
     };
     
@@ -66,6 +73,7 @@ export default function OnAir() {
       // エラー時も状態をリセット
       setDialogueActive(false);
       setDialogueRequested(false);
+      setDialogueRequester('');
     };
     
     setWs(websocket);
@@ -83,13 +91,25 @@ export default function OnAir() {
       console.log('Broadcast message received:', data);
       
       if (data.type === 'dialogue_ready') {
-        console.log('Dialogue ready:', data.id);
+        console.log('Dialogue ready:', data);
+        // ブロードキャストメッセージの構造に合わせて修正
+        const messageData = data.data || data;
+        console.log('Request ID:', messageData.id);
+        console.log('Client ID:', messageData.client_id);
         setDialogueActive(true);
         setDialogueRequested(false);
+        // 対話をリクエストしたクライアントを記録
+        if (messageData.client_id) {
+          setDialogueRequester(messageData.client_id);
+          console.log('Set dialogue requester to:', messageData.client_id);
+        } else {
+          console.log('No client_id in dialogue_ready message');
+        }
       } else if (data.type === 'dialogue_ended') {
         console.log('Dialogue ended via broadcast');
         setDialogueActive(false);
         setDialogueRequested(false);
+        setDialogueRequester('');
       } else if (data.type === 'subtitle') {
         console.log('Subtitle received:', data.data.text);
         
@@ -142,6 +162,7 @@ export default function OnAir() {
       // ブロードキャストWebSocket切断時も状態をリセット
       setDialogueActive(false);
       setDialogueRequested(false);
+      setDialogueRequester('');
     };
     
     setBroadcastWs(broadcastWebsocket);
@@ -224,12 +245,14 @@ export default function OnAir() {
       const data = await response.json();
       setDialogueActive(data.active || false);
       setDialogueRequested(data.requested || false);
+      setDialogueRequester(data.requested_by || '');
       console.log('Dialogue status checked:', data);
     } catch (error) {
       console.error('Failed to check dialogue status:', error);
       // エラー時は状態をリセット
       setDialogueActive(false);
       setDialogueRequested(false);
+      setDialogueRequester('');
     }
   };
 
@@ -288,6 +311,7 @@ export default function OnAir() {
     setSubtitleStack([]);
     setDialogueRequested(false);
     setDialogueActive(false);
+    setDialogueRequester('');
   }
 
   async function requestDialogue() {
@@ -503,54 +527,68 @@ export default function OnAir() {
                 🎙️ 対話モード中
               </Text>
               <Text fontSize="md" color="yellow.100" mb={2}>
-                AI DJと対話できます。下のボタンを押して話してください。
+                {dialogueRequester === myClientId 
+                  ? "AI DJと対話できます。下のボタンを押して話してください。"
+                  : "他のリスナーが対話中です。しばらくお待ちください。"
+                }
+              </Text>
+              <Text fontSize="xs" color="gray.400" mb={2}>
+                Debug: dialogueRequester={dialogueRequester}, myClientId={myClientId}
               </Text>
               <Text fontSize="sm" color="yellow.300">
-                💡 ボタンが{isRecording ? "赤色（録音中）" : "黄色（対話中）"}になっています。
-                {isRecording ? "話し終わったらボタンを離してください。" : "押し続けて話しかけてください。"}
+                {dialogueRequester === myClientId ? (
+                  <>
+                    💡 ボタンが{isRecording ? "赤色（録音中）" : "黄色（対話中）"}になっています。
+                    {isRecording ? "話し終わったらボタンを離してください。" : "押し続けて話しかけてください。"}
+                  </>
+                ) : (
+                  "💡 対話をリクエストしたリスナーにのみ話す権限があります。"
+                )}
               </Text>
             </Box>
 
-            {/* PTTボタン - 対話状態の時のみ表示 */}
-            <Box textAlign="center">
-              <Button
-                onMouseDown={startPTT}
-                onMouseUp={stopPTT}
-                onTouchStart={startPTT}
-                onTouchEnd={stopPTT}
-                disabled={!connected}
-                size="xl"
-                height="120px"
-                width="120px"
-                borderRadius="full"
-                fontSize="4xl"
-                fontWeight="bold"
-                colorScheme={isRecording ? "red" : "yellow"}
-                bg={isRecording ? "red.500" : "yellow.500"}
-                _hover={{ 
-                  bg: isRecording ? "red.600" : "yellow.600",
-                  transform: "scale(1.05)"
-                }}
-                _active={{ 
-                  bg: isRecording ? "red.700" : "yellow.700",
-                  transform: "scale(0.95)"
-                }}
-                _disabled={{ bg: "gray.500" }}
-                boxShadow="0 8px 32px rgba(0,0,0,0.3)"
-                transition="all 0.2s ease"
-              >
-                🎙️
-              </Button>
-              <Text fontSize="lg" fontWeight="bold" mt={4} color="yellow.200">
-                {isRecording ? "🎤 録音中 - 話してください" : "🎤 話すボタン"}
-              </Text>
-              <Text fontSize="sm" color="yellow.300" mt={2}>
-                {isRecording 
-                  ? "話し終わったらボタンを離してください" 
-                  : "ボタンを押し続けて話しかけてください"
-                }
-              </Text>
-            </Box>
+            {/* PTTボタン - 対話状態でかつ自分のリクエストの場合のみ表示 */}
+            {dialogueRequester === myClientId && (
+              <Box textAlign="center">
+                <Button
+                  onMouseDown={startPTT}
+                  onMouseUp={stopPTT}
+                  onTouchStart={startPTT}
+                  onTouchEnd={stopPTT}
+                  disabled={!connected}
+                  size="xl"
+                  height="120px"
+                  width="120px"
+                  borderRadius="full"
+                  fontSize="4xl"
+                  fontWeight="bold"
+                  colorScheme={isRecording ? "red" : "yellow"}
+                  bg={isRecording ? "red.500" : "yellow.500"}
+                  _hover={{ 
+                    bg: isRecording ? "red.600" : "yellow.600",
+                    transform: "scale(1.05)"
+                  }}
+                  _active={{ 
+                    bg: isRecording ? "red.700" : "yellow.700",
+                    transform: "scale(0.95)"
+                  }}
+                  _disabled={{ bg: "gray.500" }}
+                  boxShadow="0 8px 32px rgba(0,0,0,0.3)"
+                  transition="all 0.2s ease"
+                >
+                  🎙️
+                </Button>
+                <Text fontSize="lg" fontWeight="bold" mt={4} color="yellow.200">
+                  {isRecording ? "🎤 録音中 - 話してください" : "🎤 話すボタン"}
+                </Text>
+                <Text fontSize="sm" color="yellow.300" mt={2}>
+                  {isRecording 
+                    ? "話し終わったらボタンを離してください" 
+                    : "ボタンを押し続けて話しかけてください"
+                  }
+                </Text>
+              </Box>
+            )}
           </VStack>
         )}
 
@@ -562,7 +600,8 @@ export default function OnAir() {
   async function startPTT() {
     if (!ws) return;
     
-    if (dialogueActive) {
+    // 対話モード中でかつ自分のリクエストの場合のみ音声録音を許可
+    if (dialogueActive && dialogueRequester === myClientId) {
       // 対話モード中は音声録音を開始
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -605,7 +644,8 @@ export default function OnAir() {
   async function stopPTT() {
     if (!ws) return;
     
-    if (dialogueActive && mediaRecorderRef.current && isRecording) {
+    // 対話モード中でかつ自分のリクエストの場合のみ音声録音を停止
+    if (dialogueActive && dialogueRequester === myClientId && mediaRecorderRef.current && isRecording) {
       // 対話モード中は音声録音を停止して送信
       return new Promise<void>((resolve) => {
         // 既存のonstopハンドラーをクリアしてから新しいものを設定

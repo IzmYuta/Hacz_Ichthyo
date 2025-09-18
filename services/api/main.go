@@ -44,6 +44,7 @@ var tokenGenerator *livekit.TokenGenerator
 var pttQueue *queue.Queue
 var broadcastHub *broadcast.Hub
 var dialogueConnections map[string]*websocket.Conn
+var clientConnections map[string]*websocket.Conn // クライアントIDとWebSocket接続のマッピング
 
 // DialogueState 対話モードの状態管理
 type DialogueState struct {
@@ -51,6 +52,7 @@ type DialogueState struct {
 	ClientID     string
 	StartedAt    time.Time
 	LastActivity time.Time
+	RequestedBy  string // 対話をリクエストしたクライアントのID
 }
 
 var dialogueState *DialogueState
@@ -111,6 +113,7 @@ func main() {
 
 	// 対話接続管理初期化
 	dialogueConnections = make(map[string]*websocket.Conn)
+	clientConnections = make(map[string]*websocket.Conn)
 
 	// ルーター設定
 	r := chi.NewRouter()
@@ -134,6 +137,7 @@ func main() {
 	r.Post("/v1/broadcast", handleBroadcastMessage)
 	r.Get("/v1/dialogue/status", handleDialogueStatus)
 	r.Post("/v1/subtitle", handleSubtitle)
+	r.Get("/v1/queue/item/{id}", handleQueueItem)
 
 	port := getEnv("PORT", "8080")
 	log.Printf("Server starting on port %s", port)
@@ -201,17 +205,27 @@ func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.Printf("WebSocket upgrade failed: %v", err)
 		return
 	}
+
+	// クライアントIDを生成
+	clientID := fmt.Sprintf("client_%d", time.Now().UnixNano())
+
+	// クライアント接続を記録
+	clientConnections[clientID] = conn
+
 	defer func() {
-		// 切断時に対話モードを終了
+		// クライアント接続を削除
+		delete(clientConnections, clientID)
+
+		// 切断時に対話モードを終了（リクエストしたクライアントの場合のみ）
 		dialogueMutex.Lock()
-		if dialogueState != nil && dialogueState.Active {
-			log.Println("Client disconnected during dialogue - ending dialogue mode")
+		if dialogueState != nil && dialogueState.Active && dialogueState.RequestedBy == clientID {
+			log.Println("Dialogue requester disconnected - ending dialogue mode")
 			dialogueState = nil
 			dialogueMutex.Unlock()
 
 			// 他のクライアントに対話終了を通知
 			broadcastHub.Broadcast("dialogue_ended", map[string]interface{}{
-				"reason": "client_disconnected",
+				"reason": "requester_disconnected",
 			})
 		} else {
 			dialogueMutex.Unlock()
@@ -219,7 +233,7 @@ func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 	}()
 
-	log.Println("PTT WebSocket connected")
+	log.Printf("PTT WebSocket connected: %s", clientID)
 
 	for {
 		var msg map[string]interface{}
@@ -265,61 +279,101 @@ func handlePTTWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			item := queue.PTTItem{
 				ID:       fmt.Sprintf("dialogue_%d", time.Now().UnixNano()),
-				UserID:   "anonymous", // 実際の実装では認証から取得
+				UserID:   clientID, // クライアントIDを使用
 				Kind:     queue.PTTKind(kind),
 				Text:     "対話リクエスト",
 				Priority: 10, // 対話リクエストは高優先度
 			}
 
 			pttQueue.Enqueue(item)
-			log.Printf("Dialogue request enqueued: %s", item.ID)
+			log.Printf("Dialogue request enqueued: %s by client: %s", item.ID, clientID)
 
-			// クライアントに確認応答
+			// クライアントに確認応答（クライアントIDも含める）
 			response := map[string]interface{}{
-				"type": "dialogue_queued",
-				"id":   item.ID,
+				"type":      "dialogue_queued",
+				"id":        item.ID,
+				"client_id": clientID,
 			}
 			conn.WriteJSON(response)
 
 		case "dialogue_end":
-			// 対話終了リクエスト
-			log.Printf("Dialogue end request received")
+			// 対話終了リクエスト（リクエストしたクライアントのみ許可）
+			log.Printf("Dialogue end request received from client: %s", clientID)
 
-			// 対話状態をクリア
+			// 対話状態をチェックして、リクエストしたクライアントかどうか確認
 			dialogueMutex.Lock()
-			dialogueState = nil
-			dialogueMutex.Unlock()
+			if dialogueState != nil && dialogueState.Active && dialogueState.RequestedBy == clientID {
+				log.Printf("Dialogue end authorized for client: %s", clientID)
+				dialogueState = nil
+				dialogueMutex.Unlock()
 
-			// hostエージェントに対話終了を通知
-			endDialogueMode()
+				// hostエージェントに対話終了を通知
+				endDialogueMode()
 
-			// クライアントに確認応答
-			response := map[string]interface{}{
-				"type": "dialogue_end_ack",
+				// クライアントに確認応答
+				response := map[string]interface{}{
+					"type": "dialogue_end_ack",
+				}
+				conn.WriteJSON(response)
+			} else {
+				dialogueMutex.Unlock()
+				log.Printf("Dialogue end request denied for client: %s (not the requester)", clientID)
+
+				// 拒否応答
+				response := map[string]interface{}{
+					"type":   "dialogue_end_denied",
+					"reason": "not_authorized",
+				}
+				conn.WriteJSON(response)
 			}
-			conn.WriteJSON(response)
 
 		case "input_audio_buffer.append":
-			// 対話モード中の音声入力
+			// 対話モード中の音声入力（リクエストしたクライアントのみ許可）
 			audio, _ := msg["audio"].(string)
-			log.Printf("Received audio input for dialogue: %d bytes", len(audio))
+			log.Printf("Received audio input for dialogue from client: %s, %d bytes", clientID, len(audio))
 
-			// 対話状態の最終アクティビティを更新
+			// 対話状態をチェックして、リクエストしたクライアントかどうか確認
 			dialogueMutex.Lock()
-			if dialogueState != nil {
+			if dialogueState != nil && dialogueState.Active && dialogueState.RequestedBy == clientID {
 				dialogueState.LastActivity = time.Now()
-			}
-			dialogueMutex.Unlock()
+				dialogueMutex.Unlock()
 
-			// OpenAI Realtimeに音声データを転送
-			forwardAudioToOpenAI(audio)
+				// OpenAI Realtimeに音声データを転送
+				forwardAudioToOpenAI(audio)
+			} else {
+				dialogueMutex.Unlock()
+				log.Printf("Audio input denied for client: %s (not the requester or dialogue not active)", clientID)
+
+				// 拒否応答
+				response := map[string]interface{}{
+					"type":   "audio_input_denied",
+					"reason": "not_authorized",
+				}
+				conn.WriteJSON(response)
+			}
 
 		case "input_audio_buffer.commit":
-			// 音声入力のコミット
-			log.Printf("Audio input committed for dialogue")
+			// 音声入力のコミット（リクエストしたクライアントのみ許可）
+			log.Printf("Audio input commit request from client: %s", clientID)
 
-			// OpenAI Realtimeにコミット信号を送信
-			commitAudioToOpenAI()
+			// 対話状態をチェックして、リクエストしたクライアントかどうか確認
+			dialogueMutex.Lock()
+			if dialogueState != nil && dialogueState.Active && dialogueState.RequestedBy == clientID {
+				dialogueMutex.Unlock()
+
+				// OpenAI Realtimeにコミット信号を送信
+				commitAudioToOpenAI()
+			} else {
+				dialogueMutex.Unlock()
+				log.Printf("Audio commit denied for client: %s (not the requester or dialogue not active)", clientID)
+
+				// 拒否応答
+				response := map[string]interface{}{
+					"type":   "audio_commit_denied",
+					"reason": "not_authorized",
+				}
+				conn.WriteJSON(response)
+			}
 		}
 	}
 }
@@ -685,7 +739,16 @@ func handleBroadcastMessage(w http.ResponseWriter, r *http.Request) {
 
 	// 対話開始メッセージの場合は状態を更新
 	if msgType == "dialogue_ready" {
-		clientID := "anonymous" // 実際の実装では認証から取得
+		// リクエストIDからクライアントIDを取得
+		requestID, _ := msg["id"].(string)
+		clientID, _ := msg["client_id"].(string)
+
+		if clientID == "" {
+			clientID = "anonymous" // デフォルト値
+			log.Printf("No client_id in dialogue_ready message, using default")
+		}
+
+		log.Printf("Starting dialogue mode for client: %s (request: %s)", clientID, requestID)
 		startDialogueMode(clientID)
 	}
 
@@ -797,12 +860,15 @@ func getEnv(key, defaultValue string) string {
 func handleDialogueStatus(w http.ResponseWriter, r *http.Request) {
 	dialogueMutex.RLock()
 	active := dialogueState != nil && dialogueState.Active
-	requested := false // 必要に応じて実装
+	requestedBy := ""
+	if dialogueState != nil {
+		requestedBy = dialogueState.RequestedBy
+	}
 	dialogueMutex.RUnlock()
 
 	status := map[string]interface{}{
-		"active":    active,
-		"requested": requested,
+		"active":       active,
+		"requested_by": requestedBy,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -845,6 +911,7 @@ func startDialogueMode(clientID string) {
 		ClientID:     clientID,
 		StartedAt:    time.Now(),
 		LastActivity: time.Now(),
+		RequestedBy:  clientID, // リクエストしたクライアントを記録
 	}
 	log.Printf("Dialogue mode started for client: %s", clientID)
 }
@@ -879,4 +946,22 @@ func handleSubtitle(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "subtitle_broadcasted",
 	})
+}
+
+// handleQueueItem キューアイテムの詳細を取得
+func handleQueueItem(w http.ResponseWriter, r *http.Request) {
+	itemID := chi.URLParam(r, "id")
+	if itemID == "" {
+		http.Error(w, "Item ID is required", http.StatusBadRequest)
+		return
+	}
+
+	item := pttQueue.GetByID(itemID)
+	if item == nil {
+		http.Error(w, "Item not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(item)
 }

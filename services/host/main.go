@@ -1074,6 +1074,7 @@ func (h *HostAgent) checkQueue() {
 	var queueData struct {
 		Item *struct {
 			ID     string `json:"id"`
+			UserID string `json:"user_id"`
 			Kind   string `json:"kind"`
 			Text   string `json:"text"`
 			Status string `json:"status"`
@@ -1088,13 +1089,70 @@ func (h *HostAgent) checkQueue() {
 	if queueData.Item != nil && queueData.Item.Kind == "dialogue" && queueData.Item.Status == "queued" {
 		log.Printf("Dialogue request found in queue: %s", queueData.Item.ID)
 
+		// クライアントIDを取得してからキューから削除
+		clientID := queueData.Item.UserID
+		log.Printf("Found client ID for dialogue request %s: %s", queueData.Item.ID, clientID)
+
 		// キューからアイテムを削除して対話モードを開始
 		h.dequeueDialogueRequest(queueData.Item.ID)
-		h.startDialogueMode(queueData.Item.ID)
+		h.startDialogueModeWithClientID(queueData.Item.ID, clientID)
 	}
 }
 
-// startDialogueMode 対話モードを開始
+// startDialogueModeWithClientID クライアントIDを指定して対話モードを開始
+func (h *HostAgent) startDialogueModeWithClientID(requestID, clientID string) {
+	h.dialogueStateMutex.Lock()
+	defer h.dialogueStateMutex.Unlock()
+
+	if h.dialogueMode {
+		log.Printf("Dialogue mode already active, ignoring request: %s", requestID)
+		return // 既に対話モード中
+	}
+
+	log.Printf("Starting dialogue mode for request: %s, client: %s", requestID, clientID)
+	h.dialogueMode = true
+	h.dialogueStartedAt = time.Now()
+	h.lastActivity = time.Now()
+
+	// 3分のタイムアウトタイマーを開始
+	go h.startDialogueTimeout()
+
+	// 現在のTTSを停止（必要に応じて）
+	log.Println("Stopping current TTS for dialogue mode")
+	h.stopCurrentAudio()
+
+	// 音声バッファをクリア
+	if h.pcmWriter != nil {
+		h.pcmWriter.ClearBuffer()
+	}
+
+	// 新しい音声トラックを作成（対話モード用）
+	if err := h.createNewAudioTrack(); err != nil {
+		log.Printf("Failed to create new audio track: %v", err)
+		h.dialogueMode = false
+		return
+	}
+
+	// ユーザー音声トラックを作成
+	if err := h.createUserAudioTrack(); err != nil {
+		log.Printf("Failed to create user audio track: %v", err)
+		h.dialogueMode = false
+		return
+	}
+
+	// OpenAI Realtime接続を開始
+	if err := h.connectToOpenAIRealtime(); err != nil {
+		log.Printf("Failed to connect to OpenAI Realtime: %v", err)
+		h.dialogueMode = false
+		return
+	}
+
+	// 対話開始の通知を送信（クライアントIDを含む）
+	log.Printf("Sending dialogue_ready notification for request: %s, client: %s", requestID, clientID)
+	h.sendDialogueNotificationWithClientID("dialogue_ready", requestID, clientID)
+}
+
+// startDialogueMode 対話モードを開始（後方互換性のため）
 func (h *HostAgent) startDialogueMode(requestID string) {
 	h.dialogueStateMutex.Lock()
 	defer h.dialogueStateMutex.Unlock()
@@ -1225,6 +1283,37 @@ func (h *HostAgent) sendDialogueNotification(notificationType, requestID string)
 	defer resp.Body.Close()
 
 	log.Printf("Dialogue notification sent: %s (requestID: %s)", notificationType, requestID)
+}
+
+// sendDialogueNotificationWithClientID クライアントIDを指定して対話状態の変更を通知
+func (h *HostAgent) sendDialogueNotificationWithClientID(notificationType, requestID, clientID string) {
+	apiBase := getEnv("API_BASE", "http://api:8080")
+
+	payload := map[string]interface{}{
+		"type": notificationType,
+	}
+	if requestID != "" {
+		payload["id"] = requestID
+	}
+	if clientID != "" {
+		payload["client_id"] = clientID
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	// HTTPクライアントにタイムアウトを設定
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Post(apiBase+"/v1/broadcast", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Failed to send dialogue notification: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Dialogue notification sent: %s (requestID: %s, clientID: %s)", notificationType, requestID, clientID)
 }
 
 // dequeueDialogueRequest キューから対話リクエストを削除
