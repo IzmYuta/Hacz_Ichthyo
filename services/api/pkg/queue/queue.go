@@ -139,3 +139,15 @@ func (q *Queue) Remove(id string) bool {
 	}
 	return false
 }
+
+func (q *Queue) GetByID(id string) *PTTItem {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	for _, item := range q.items {
+		if item.ID == id {
+			return &item
+		}
+	}
+	return nil
+}
