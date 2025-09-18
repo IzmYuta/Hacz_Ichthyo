@@ -47,6 +47,10 @@ export default function OnAir() {
         console.log('Dialogue end acknowledged');
         setDialogueActive(false);
         setDialogueRequested(false);
+      } else if (data.type === 'dialogue_ended') {
+        console.log('Dialogue ended by server');
+        setDialogueActive(false);
+        setDialogueRequested(false);
       }
     };
     
@@ -83,7 +87,7 @@ export default function OnAir() {
         setDialogueActive(true);
         setDialogueRequested(false);
       } else if (data.type === 'dialogue_ended') {
-        console.log('Dialogue ended');
+        console.log('Dialogue ended via broadcast');
         setDialogueActive(false);
         setDialogueRequested(false);
       } else if (data.type === 'subtitle') {
@@ -166,18 +170,17 @@ export default function OnAir() {
         };
         ws.send(JSON.stringify(message));
         console.log('Dialogue end request sent on page unload');
+        
+        // 対話状態を即座に無効化
+        setDialogueActive(false);
       }
     };
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden' && dialogueActive && ws && ws.readyState === WebSocket.OPEN) {
-        // ページが非表示になった時も対話を終了
-        const message = {
-          type: 'dialogue_end',
-          kind: 'dialogue'
-        };
-        ws.send(JSON.stringify(message));
-        console.log('Dialogue end request sent on visibility change');
+      // visibilitychangeでは対話を終了しない
+      // タブ切り替えや他のアプリへのフォーカス移動で対話が終了するのを防ぐ
+      if (document.visibilityState === 'hidden' && dialogueActive) {
+        console.log('Page became hidden during dialogue - keeping dialogue active');
       }
     };
 
@@ -304,7 +307,7 @@ export default function OnAir() {
   }
 
   async function endDialogue() {
-    if (!ws) return;
+    if (!ws || !dialogueActive) return;
     
     try {
       const message = {
@@ -312,10 +315,13 @@ export default function OnAir() {
         kind: 'dialogue'
       };
       ws.send(JSON.stringify(message));
-      setDialogueActive(false);
+      // 状態はサーバーからの応答で更新される
       console.log('Dialogue end request sent');
     } catch (error) {
       console.error('Failed to send dialogue end request:', error);
+      // エラー時は手動で状態をリセット
+      setDialogueActive(false);
+      setDialogueRequested(false);
     }
   }
 
