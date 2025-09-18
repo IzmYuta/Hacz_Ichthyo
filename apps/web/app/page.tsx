@@ -8,6 +8,7 @@ export default function OnAir() {
   const [connected, setConnected] = useState(false);
   const [subtitles, setSubtitles] = useState('');
   const [displayedSubtitles, setDisplayedSubtitles] = useState('');
+  const [subtitleStack, setSubtitleStack] = useState<Array<{text: string, id: string, timestamp: Date}>>([]);
   const [theme, setTheme] = useState({ title: 'Radio-24', color: '#1a1a2e' });
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [broadcastWs, setBroadcastWs] = useState<WebSocket | null>(null);
@@ -20,6 +21,7 @@ export default function OnAir() {
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
   const subtitleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const typewriterTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const currentSubtitleIdRef = useRef<string>('');
 
   const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8080';
 
@@ -86,7 +88,6 @@ export default function OnAir() {
         setDialogueRequested(false);
       } else if (data.type === 'subtitle') {
         console.log('Subtitle received:', data.data.text);
-        setSubtitles(data.data.text);
         
         // 既存のタイムアウトをクリア
         if (subtitleTimeoutRef.current) {
@@ -96,14 +97,35 @@ export default function OnAir() {
           clearTimeout(typewriterTimeoutRef.current);
         }
         
-        // タイプライター効果で字幕を表示
-        startTypewriterEffect(data.data.text);
+        // 現在表示中の字幕がある場合は、それをスタックに追加
+        if (currentSubtitleIdRef.current && subtitles) {
+          setSubtitleStack(prev => {
+            const newStack = [...prev, {
+              text: subtitles,
+              id: currentSubtitleIdRef.current,
+              timestamp: new Date()
+            }];
+            // 最大3つに制限（古いものから削除）
+            return newStack.slice(-3);
+          });
+        }
         
-        // 10秒後に字幕をクリア
+        // 新しい字幕を設定
+        setSubtitles(data.data.text);
+        
+        // 新しい字幕IDを生成
+        const subtitleId = `subtitle-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        currentSubtitleIdRef.current = subtitleId;
+        
+        // タイプライター効果で字幕を表示
+        startTypewriterEffect(data.data.text, subtitleId);
+        
+        // 50秒後に現在の字幕をクリア（フォールバック用）
         subtitleTimeoutRef.current = setTimeout(() => {
           setSubtitles('');
           setDisplayedSubtitles('');
-        }, 10000);
+          currentSubtitleIdRef.current = '';
+        }, 50000);
       }
     };
     
@@ -169,11 +191,16 @@ export default function OnAir() {
   }, [dialogueActive, ws]);
 
   // タイプライター効果の実装
-  const startTypewriterEffect = (text: string) => {
+  const startTypewriterEffect = (text: string, subtitleId: string) => {
     setDisplayedSubtitles('');
     let index = 0;
     
     const typeNextChar = () => {
+      // 字幕IDが変わった場合は停止
+      if (currentSubtitleIdRef.current !== subtitleId) {
+        return;
+      }
+      
       if (index < text.length) {
         setDisplayedSubtitles(text.slice(0, index + 1));
         index++;
@@ -255,6 +282,7 @@ export default function OnAir() {
     setConnected(false);
     setSubtitles('');
     setDisplayedSubtitles('');
+    setSubtitleStack([]);
     setDialogueRequested(false);
     setDialogueActive(false);
   }
@@ -372,32 +400,86 @@ export default function OnAir() {
           bg="blackAlpha.600" 
           p={6} 
           borderRadius="md"
-          minH="200px"
+          minH="400px"
+          maxH="600px"
           border="1px solid"
           borderColor="whiteAlpha.200"
+          overflowY="auto"
         >
           <Text fontSize="lg" fontWeight="bold" mb={4} color="blue.200">
-            📺 字幕:
+            📺 字幕履歴:
           </Text>
-          <Text 
-            whiteSpace="pre-wrap" 
-            fontSize="lg"
-            lineHeight="1.8"
-            color={displayedSubtitles ? "white" : "gray.400"}
-            fontFamily="mono"
-            p={displayedSubtitles ? 4 : 0}
-            bg={displayedSubtitles ? "whiteAlpha.100" : "transparent"}
-            borderRadius={displayedSubtitles ? "md" : "none"}
-            transition="all 0.3s ease"
-            position="relative"
-          >
-            {displayedSubtitles || '字幕がここに表示されます...'}
-            {displayedSubtitles && displayedSubtitles.length < subtitles.length && (
-              <Text as="span" color="yellow.300" animation="blink 1s infinite">
-                |
+          
+          {/* スタックされた字幕 */}
+          <VStack gap={3} align="stretch" mb={4}>
+            {subtitleStack.map((subtitle) => (
+              <Box
+                key={subtitle.id}
+                bg="whiteAlpha.100"
+                p={3}
+                borderRadius="md"
+                border="1px solid"
+                borderColor="whiteAlpha.200"
+                opacity={0.8}
+              >
+                <Text 
+                  fontSize="sm" 
+                  color="gray.400" 
+                  mb={1}
+                >
+                  {subtitle.timestamp.toLocaleTimeString()}
+                </Text>
+                <Text 
+                  whiteSpace="pre-wrap"
+                  fontSize="md"
+                  lineHeight="1.6"
+                  color="gray.200"
+                  fontFamily="mono"
+                >
+                  {subtitle.text}
+                </Text>
+              </Box>
+            ))}
+          </VStack>
+          
+          {/* 現在の字幕 */}
+          {displayedSubtitles && (
+            <Box
+              bg="yellow.900"
+              p={4}
+              borderRadius="md"
+              border="2px solid"
+              borderColor="yellow.500"
+              position="relative"
+            >
+              <Text 
+                whiteSpace="pre-wrap" 
+                fontSize="lg"
+                lineHeight="1.8"
+                color="yellow.100"
+                fontFamily="mono"
+              >
+                {displayedSubtitles}
+                {displayedSubtitles.length < subtitles.length && (
+                  <Text as="span" color="yellow.300" animation="blink 1s infinite">
+                    |
+                  </Text>
+                )}
               </Text>
-            )}
-          </Text>
+            </Box>
+          )}
+          
+          {/* 字幕がない場合のメッセージ */}
+          {!displayedSubtitles && subtitleStack.length === 0 && (
+            <Text 
+              color="gray.400"
+              fontStyle="italic"
+              textAlign="center"
+              py={8}
+            >
+              字幕がここに表示されます...
+            </Text>
+          )}
         </Box>
 
         {dialogueActive && (
