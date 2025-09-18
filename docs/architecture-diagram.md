@@ -46,7 +46,7 @@ graph TB
     WEB -.->|PTT Audio| API
     API -.->|Queue Management| REDIS
     API -.->|Dialogue Request| HOST
-    WEB -.->|Audio Data (Base64)| API
+    WEB -.->|Audio Data Base64| API
     API -.->|Audio Forward| HOST
     HOST -.->|Realtime Audio| OPENAI
     OPENAI -.->|AI Response Audio| HOST
