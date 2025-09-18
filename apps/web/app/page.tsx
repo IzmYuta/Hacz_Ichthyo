@@ -83,8 +83,8 @@ export default function OnAir() {
         setDialogueActive(false);
         setDialogueRequested(false);
       } else if (data.type === 'subtitle') {
-        console.log('Subtitle received:', data.text);
-        setSubtitles(data.text);
+        console.log('Subtitle received:', data.data.text);
+        setSubtitles(data.data.text);
         
         // 既存のタイムアウトをクリア
         if (subtitleTimeoutRef.current) {
@@ -259,15 +259,6 @@ export default function OnAir() {
     }
   }
 
-  async function rotateTheme() {
-    try {
-      const response = await fetch(`${API_BASE}/v1/theme/rotate`, { method: 'POST' });
-      const newTheme = await response.json();
-      setTheme(newTheme);
-    } catch (error) {
-      console.error('Theme rotation error:', error);
-    }
-  }
 
   return (
     <Box 
