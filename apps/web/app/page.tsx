@@ -1,7 +1,6 @@
 'use client';
 
 import { useRef, useState, useEffect } from 'react';
-import Link from 'next/link';
 import { Box, Button, VStack, Text, HStack } from '@chakra-ui/react';
 import { Room, RoomEvent, RemoteTrackPublication, RemoteAudioTrack } from 'livekit-client';
 
@@ -326,25 +325,6 @@ export default function OnAir() {
             </Button>
           )}
 
-          <Button 
-            onClick={rotateTheme}
-            colorScheme="purple"
-            size="lg"
-            bg="purple.500"
-            _hover={{ bg: "purple.600" }}
-          >
-            テーマ切替
-          </Button>
-
-          <Button 
-            asChild
-            colorScheme="orange"
-            size="lg"
-            bg="orange.500"
-            _hover={{ bg: "orange.600" }}
-          >
-            <Link href="/submit">投稿する</Link>
-          </Button>
         </HStack>
 
         <Box 
