@@ -7,6 +7,7 @@ import { Room, RoomEvent, RemoteTrackPublication, RemoteAudioTrack } from 'livek
 export default function OnAir() {
   const [connected, setConnected] = useState(false);
   const [subtitles, setSubtitles] = useState('');
+  const [displayedSubtitles, setDisplayedSubtitles] = useState('');
   const [theme, setTheme] = useState({ title: 'Radio-24', color: '#1a1a2e' });
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [broadcastWs, setBroadcastWs] = useState<WebSocket | null>(null);
@@ -18,6 +19,7 @@ export default function OnAir() {
   const roomRef = useRef<Room | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
   const subtitleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const typewriterTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8080';
 
@@ -90,10 +92,17 @@ export default function OnAir() {
         if (subtitleTimeoutRef.current) {
           clearTimeout(subtitleTimeoutRef.current);
         }
+        if (typewriterTimeoutRef.current) {
+          clearTimeout(typewriterTimeoutRef.current);
+        }
+        
+        // タイプライター効果で字幕を表示
+        startTypewriterEffect(data.data.text);
         
         // 10秒後に字幕をクリア
         subtitleTimeoutRef.current = setTimeout(() => {
           setSubtitles('');
+          setDisplayedSubtitles('');
         }, 10000);
       }
     };
@@ -117,6 +126,9 @@ export default function OnAir() {
       // タイムアウトをクリア
       if (subtitleTimeoutRef.current) {
         clearTimeout(subtitleTimeoutRef.current);
+      }
+      if (typewriterTimeoutRef.current) {
+        clearTimeout(typewriterTimeoutRef.current);
       }
     };
   }, [API_BASE]);
@@ -155,6 +167,25 @@ export default function OnAir() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [dialogueActive, ws]);
+
+  // タイプライター効果の実装
+  const startTypewriterEffect = (text: string) => {
+    setDisplayedSubtitles('');
+    let index = 0;
+    
+    const typeNextChar = () => {
+      if (index < text.length) {
+        setDisplayedSubtitles(text.slice(0, index + 1));
+        index++;
+        // 日本語の場合は少し遅め、英数字・記号は速めに設定
+        const char = text[index - 1];
+        const delay = /[ひらがなカタカナ漢字]/.test(char) ? 80 : 40;
+        typewriterTimeoutRef.current = setTimeout(typeNextChar, delay);
+      }
+    };
+    
+    typeNextChar();
+  };
 
   // 対話状態確認関数
   const checkDialogueStatus = async () => {
@@ -223,6 +254,7 @@ export default function OnAir() {
     }
     setConnected(false);
     setSubtitles('');
+    setDisplayedSubtitles('');
     setDialogueRequested(false);
     setDialogueActive(false);
   }
@@ -351,14 +383,20 @@ export default function OnAir() {
             whiteSpace="pre-wrap" 
             fontSize="lg"
             lineHeight="1.8"
-            color={subtitles ? "white" : "gray.400"}
+            color={displayedSubtitles ? "white" : "gray.400"}
             fontFamily="mono"
-            p={subtitles ? 4 : 0}
-            bg={subtitles ? "whiteAlpha.100" : "transparent"}
-            borderRadius={subtitles ? "md" : "none"}
+            p={displayedSubtitles ? 4 : 0}
+            bg={displayedSubtitles ? "whiteAlpha.100" : "transparent"}
+            borderRadius={displayedSubtitles ? "md" : "none"}
             transition="all 0.3s ease"
+            position="relative"
           >
-            {subtitles || '字幕がここに表示されます...'}
+            {displayedSubtitles || '字幕がここに表示されます...'}
+            {displayedSubtitles && displayedSubtitles.length < subtitles.length && (
+              <Text as="span" color="yellow.300" animation="blink 1s infinite">
+                |
+              </Text>
+            )}
           </Text>
         </Box>
 
